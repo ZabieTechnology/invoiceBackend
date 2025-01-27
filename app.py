@@ -27,6 +27,12 @@ app.config["JWT_SECRET_KEY"] = "your_jwt_secret_key"  # Replace with your own se
 app.config["JWT_ACCESS_TOKEN_EXPIRES"] = timedelta(hours=1)
 jwt = JWTManager(app)
 
+
+@app.route("/", methods=["GET"])
+def home():
+    return jsonify(status="success"), 200
+
+
 # Route for user registration
 @app.route("/register", methods=["POST"])
 def register_user():
