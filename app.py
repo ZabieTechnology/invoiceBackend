@@ -8,6 +8,8 @@ from datetime import timedelta
 from dotenv import load_dotenv
 import os
 
+
+
 load_dotenv()
 
 app = Flask(__name__)
@@ -40,12 +42,16 @@ def register_user():
     print(data)
     username = data.get("username")
     password = data.get("password")
+    email = data.get("email")
  
-
     # Check if the user already exists
     existing_user = mongo.db.users.find_one({"username": username})  # Referring to the 'users' collection
     if existing_user:
         return jsonify({"message": "Username already exists"}), 400
+    
+    existing_email = mongo.db.users.find_one({"email": email})  # Referring to the 'users' collection
+    if existing_email:
+        return jsonify({"message": "Email already exists"}), 400
 
     # Hash the password using bcrypt
     hashed_password = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt())
@@ -54,7 +60,7 @@ def register_user():
     mongo.db.users.insert_one({
         "username": username,
         "password": hashed_password,
-        "email":"123@gmail.com"
+        "email": email
     })
 
     return jsonify({"message": "User registered successfully"}), 201
