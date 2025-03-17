@@ -1,113 +1,105 @@
 from flask import Flask, request, jsonify
 from flask_pymongo import PyMongo
 from flask_cors import CORS
-from flask_jwt_extended import JWTManager, create_access_token, jwt_required
-import bcrypt
-import certifi  # For SSL certificates
-from datetime import timedelta
-from dotenv import load_dotenv
+from bson.objectid import ObjectId
+from datetime import datetime
+import logging
 import os
+from dotenv import load_dotenv
 
-
-
+# Load environment variables
 load_dotenv()
 
 app = Flask(__name__)
+CORS(app)  # Enable CORS
 
-# Enable CORS for the frontend
-CORS(app)
+# MongoDB configuration
+app.config["MONGO_URI"] = os.getenv("DATABASE_URL")
+mongo = PyMongo(app)
 
-# MongoDB URI and SSL setup
-mongo_uri = os.getenv("DATABASE_URL")
-app.config["MONGO_URI"] = mongo_uri
+# Route to fetch dropdown values with pagination
+@app.route("/api/dropdown", methods=["GET"])
+def get_dropdown_values():
+    try:
+        # Pagination parameters
+        page = int(request.args.get("page", 1))
+        limit = int(request.args.get("limit", 25))
 
-# Initialize PyMongo with the SSL certificates
-mongo = PyMongo(app,tlsCAFile=certifi.where())
+        # Calculate skip value for pagination
+        skip = (page - 1) * limit
 
-# JWT Configuration
-app.config["JWT_SECRET_KEY"] = "your_jwt_secret_key"  # Replace with your own secret key
-app.config["JWT_ACCESS_TOKEN_EXPIRES"] = timedelta(hours=1)
-jwt = JWTManager(app)
+        # Fetch dropdown values with pagination
+        dropdown_values = list(mongo.db.dropdown.find().skip(skip).limit(limit))
+        total_items = mongo.db.dropdown.count_documents({})
 
+        # Convert MongoDB cursor to a list of dictionaries
+        result = [
+            {
+                "_id": str(item["_id"]),  # Convert ObjectId to string
+                "type": item["type"],
+                "value": item["value"],
+                "label": item["label"]
+            }
+            for item in dropdown_values
+        ]
 
-@app.route("/", methods=["GET"])
-def home():
-    return jsonify(status="success"), 200
+        return jsonify({
+            "data": result,
+            "total": total_items,
+            "page": page,
+            "limit": limit
+        }), 200
+    except Exception as e:
+        logging.error(f"Error fetching dropdown values: {e}")
+        return jsonify({"message": "Failed to fetch dropdown values"}), 500
 
-
-# Route for user registration
-@app.route("/register", methods=["POST"])
-def register_user():
+# Route to add a new dropdown value
+@app.route("/api/dropdown", methods=["POST"])
+def add_dropdown_value():
     data = request.get_json()
-    print(data)
-    username = data.get("username")
-    password = data.get("password")
-    email = data.get("email")
- 
-    # Check if the user already exists
-    existing_user = mongo.db.users.find_one({"username": username})  # Referring to the 'users' collection
-    if existing_user:
-        return jsonify({"message": "Username already exists"}), 400
-    
-    existing_email = mongo.db.users.find_one({"email": email})  # Referring to the 'users' collection
-    if existing_email:
-        return jsonify({"message": "Email already exists"}), 400
+    if not data or not data.get("type") or not data.get("value") or not data.get("label"):
+        return jsonify({"message": "Type, value, and label are required"}), 400
 
-    # Hash the password using bcrypt
-    hashed_password = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt())
-
-    # Create a new user in the 'users' collection
-    mongo.db.users.insert_one({
-        "username": username,
-        "password": hashed_password,
-        "email": email
+    # Insert new value with created_date, updated_date, and updated_user
+    result = mongo.db.dropdown.insert_one({
+        "type": data["type"],
+        "value": data["value"],
+        "label": data["label"],
+        "created_date": datetime.utcnow(),
+        "updated_date": datetime.utcnow(),
+        "updated_user": "Admin",  # Replace with actual user
     })
+    return jsonify({"message": "Dropdown value added successfully", "id": str(result.inserted_id)}), 201
 
-    return jsonify({"message": "User registered successfully"}), 201
-
-# Route for user login
-@app.route("/login", methods=["POST"])
-def login_user():
+# Route to update a dropdown value
+@app.route("/api/dropdown/<id>", methods=["PUT"])
+def update_dropdown_value(id):
     data = request.get_json()
-    print(data)
-    username = data.get("username")
-    password = data.get("password")
+    if not data or not data.get("label"):
+        return jsonify({"message": "Label is required"}), 400
 
-    # Find the user by username in the 'users' collection
-    user = mongo.db.users.find_one({"username": username})
-    if not user:
-        return jsonify({"message": "User not found"}), 404
+    # Update value with updated_date and updated_user
+    result = mongo.db.dropdown.update_one(
+        {"_id": ObjectId(id)},
+        {
+            "$set": {
+                "label": data["label"],
+                "updated_date": datetime.utcnow(),
+                "updated_user": "Admin",  # Replace with actual user
+            }
+        }
+    )
+    if result.matched_count == 0:
+        return jsonify({"message": "Dropdown value not found"}), 404
+    return jsonify({"message": "Dropdown value updated successfully"}), 200
 
-    # Verify the password
-    if not bcrypt.checkpw(password.encode('utf-8'), user["password"]):
-        return jsonify({"message": "Invalid password"}), 400
-
-    # Create JWT token
-    access_token = create_access_token(identity=username)
-    return jsonify(access_token=access_token), 200
-
-# Protected route example
-@app.route("/protected", methods=["GET"])
-@jwt_required()
-def protected():
-    return jsonify(message="This is a protected route.")
+# Route to delete a dropdown value
+@app.route("/api/dropdown/<id>", methods=["DELETE"])
+def delete_dropdown_value(id):
+    result = mongo.db.dropdown.delete_one({"_id": ObjectId(id)})
+    if result.deleted_count == 0:
+        return jsonify({"message": "Dropdown value not found"}), 404
+    return jsonify({"message": "Dropdown value deleted successfully"}), 200
 
 if __name__ == "__main__":
     app.run(debug=True)
-
-
-""" 
-from pymongo.mongo_client import MongoClient
-import certifi
-
-uri = "mongodb+srv://dbUser:test@cobook.14ec1.mongodb.net/?retryWrites=true&w=majority&appName=cobook"
-
-# Create a new client and connect to the server
-client = MongoClient(uri, tlsCAFile=certifi.where())
-
-# Send a ping to confirm a successful connection
-try:
-    client.admin.command('ping')
-    print("Pinged your deployment. You successfully connected to MongoDB!")
-except Exception as e:
-    print(e) """
