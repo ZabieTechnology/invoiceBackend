@@ -1,105 +1,86 @@
-from flask import Flask, request, jsonify
-from flask_pymongo import PyMongo
-from flask_cors import CORS
-from bson.objectid import ObjectId
-from datetime import datetime
-import logging
+# app.py
 import os
-from dotenv import load_dotenv
+from flask import Flask, jsonify, session
+from flask_cors import CORS
+from flask_session import Session
 
-# Load environment variables
-load_dotenv()
+# Updated import from config
+from config import config, ensure_upload_folders_exist
+from db.database import init_db, mongo
 
-app = Flask(__name__)
-CORS(app)  # Enable CORS
+# Import Blueprints
+from api.dropdown import dropdown_bp
+from api.company_information import company_info_bp
+from api.contact_details import contact_details_bp
+from api.customers import customers_bp
+from api.vendors import vendors_bp
+from api.staff import staff_bp
+from api.chart_of_accounts import chart_of_accounts_bp
+from api.expenses import expenses_bp
+from api.document_ai import document_ai_bp # <<< Import Document AI Blueprint
+# from api.auth import auth_bp
 
-# MongoDB configuration
-app.config["MONGO_URI"] = os.getenv("DATABASE_URL")
-mongo = PyMongo(app)
+def create_app():
+    app = Flask(__name__)
+    app.config.from_object(config)
+    
+    # Call the updated function to ensure all upload folders exist
+    ensure_upload_folders_exist()
 
-# Route to fetch dropdown values with pagination
-@app.route("/api/dropdown", methods=["GET"])
-def get_dropdown_values():
-    try:
-        # Pagination parameters
-        page = int(request.args.get("page", 1))
-        limit = int(request.args.get("limit", 25))
-
-        # Calculate skip value for pagination
-        skip = (page - 1) * limit
-
-        # Fetch dropdown values with pagination
-        dropdown_values = list(mongo.db.dropdown.find().skip(skip).limit(limit))
-        total_items = mongo.db.dropdown.count_documents({})
-
-        # Convert MongoDB cursor to a list of dictionaries
-        result = [
-            {
-                "_id": str(item["_id"]),  # Convert ObjectId to string
-                "type": item["type"],
-                "value": item["value"],
-                "label": item["label"]
-            }
-            for item in dropdown_values
-        ]
-
-        return jsonify({
-            "data": result,
-            "total": total_items,
-            "page": page,
-            "limit": limit
-        }), 200
-    except Exception as e:
-        logging.error(f"Error fetching dropdown values: {e}")
-        return jsonify({"message": "Failed to fetch dropdown values"}), 500
-
-# Route to add a new dropdown value
-@app.route("/api/dropdown", methods=["POST"])
-def add_dropdown_value():
-    data = request.get_json()
-    if not data or not data.get("type") or not data.get("value") or not data.get("label"):
-        return jsonify({"message": "Type, value, and label are required"}), 400
-
-    # Insert new value with created_date, updated_date, and updated_user
-    result = mongo.db.dropdown.insert_one({
-        "type": data["type"],
-        "value": data["value"],
-        "label": data["label"],
-        "created_date": datetime.utcnow(),
-        "updated_date": datetime.utcnow(),
-        "updated_user": "Admin",  # Replace with actual user
-    })
-    return jsonify({"message": "Dropdown value added successfully", "id": str(result.inserted_id)}), 201
-
-# Route to update a dropdown value
-@app.route("/api/dropdown/<id>", methods=["PUT"])
-def update_dropdown_value(id):
-    data = request.get_json()
-    if not data or not data.get("label"):
-        return jsonify({"message": "Label is required"}), 400
-
-    # Update value with updated_date and updated_user
-    result = mongo.db.dropdown.update_one(
-        {"_id": ObjectId(id)},
-        {
-            "$set": {
-                "label": data["label"],
-                "updated_date": datetime.utcnow(),
-                "updated_user": "Admin",  # Replace with actual user
-            }
-        }
+    CORS(
+        app,
+        origins=["http://localhost:3000"],
+        supports_credentials=True
     )
-    if result.matched_count == 0:
-        return jsonify({"message": "Dropdown value not found"}), 404
-    return jsonify({"message": "Dropdown value updated successfully"}), 200
+    init_db(app)
 
-# Route to delete a dropdown value
-@app.route("/api/dropdown/<id>", methods=["DELETE"])
-def delete_dropdown_value(id):
-    result = mongo.db.dropdown.delete_one({"_id": ObjectId(id)})
-    if result.deleted_count == 0:
-        return jsonify({"message": "Dropdown value not found"}), 404
-    return jsonify({"message": "Dropdown value deleted successfully"}), 200
+    if app.config.get('SESSION_TYPE') == 'mongodb':
+        app.config['SESSION_MONGODB'] = mongo.cx
+        app.config['SESSION_MONGODB_DB'] = config.SESSION_MONGODB_DB or mongo.db.name
+        app.config['SESSION_MONGODB_COLLECT'] = config.SESSION_MONGODB_COLLECT
+    Session(app)
+
+    # Register Blueprints
+    app.register_blueprint(dropdown_bp)
+    app.register_blueprint(company_info_bp)
+    app.register_blueprint(contact_details_bp)
+    app.register_blueprint(customers_bp)
+    app.register_blueprint(vendors_bp)
+    app.register_blueprint(staff_bp)
+    app.register_blueprint(chart_of_accounts_bp)
+    app.register_blueprint(expenses_bp)
+    app.register_blueprint(document_ai_bp) # <<< Register Document AI Blueprint
+    # app.register_blueprint(auth_bp)
+
+    # ... (rest of your test routes and index route) ...
+    @app.route('/api/test/set-session/<name>')
+    def set_session_route(name):
+        session['username'] = name
+        session['user_id'] = 'temp_id_123'
+        return jsonify({"message": f"Username '{name}' set in session."})
+
+    @app.route('/api/test/get-session')
+    def get_session_route():
+        username = session.get('username', 'Not set')
+        user_id = session.get('user_id', 'Not set')
+        return jsonify({"username_in_session": username, "user_id_in_session": user_id})
+
+    @app.route('/api/test/clear-session')
+    def clear_session_route():
+        session.pop('username', None)
+        session.pop('user_id', None)
+        return jsonify({"message": "Session username cleared."})
+
+    @app.route("/")
+    def index():
+        return jsonify({"status": "ok", "message": "Welcome to the Invoice Backend API!"})
+
+
+    return app
+
+app = create_app()
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    host = os.environ.get('FLASK_RUN_HOST', '127.0.0.1')
+    port = int(os.environ.get('FLASK_RUN_PORT', 5000))
+    app.run(host=host, port=port, debug=app.config['DEBUG'])
