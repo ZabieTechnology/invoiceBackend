@@ -19,3 +19,9 @@ python-dotenv==0.21.1
 typing_extensions==4.7.1
 Werkzeug==2.2.3
 zipp==3.15.0
+pymongo[srv]
+Werkzeug>=2.0 # For password hashing (usually a Flask dependency)
+
+# Add other dependencies as needed
+azure-ai-formrecognizer
+azure-identity

@@ -2,6 +2,7 @@
 import os
 from dotenv import load_dotenv
 import secrets
+from datetime import timedelta # For JWT expiration
 
 basedir = os.path.abspath(os.path.dirname(__file__))
 dotenv_path = os.path.join(basedir, '.env')
@@ -13,7 +14,7 @@ else:
 class Config:
     SECRET_KEY = os.environ.get('SECRET_KEY')
     if not SECRET_KEY:
-        print("Warning: SECRET_KEY not set in .env. Using a temporary default key.")
+        print("Warning: SECRET_KEY not set in .env. Using a temporary default key for Flask session.")
         SECRET_KEY = secrets.token_hex(16)
 
     DEBUG = os.environ.get('FLASK_DEBUG', 'False').lower() in ('true', '1', 't')
@@ -27,14 +28,23 @@ class Config:
     SESSION_USE_SIGNER = True
     SESSION_FILE_DIR = os.path.join(basedir, '.flask_session')
     
-    UPLOAD_FOLDER = os.path.join(basedir, 'uploads', 'logos') # For company logos
-    EXPENSE_INVOICE_UPLOAD_FOLDER = os.path.join(basedir, 'uploads', 'expense_invoices') # For expense invoices
-    ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'svg', 'pdf'} # Add PDF for invoices
+    UPLOAD_FOLDER = os.path.join(basedir, 'uploads', 'logos')
+    EXPENSE_INVOICE_UPLOAD_FOLDER = os.path.join(basedir, 'uploads', 'expense_invoices')
+    ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'svg', 'pdf'}
 
-    # --- Azure Document AI Configuration ---
     AZURE_FORM_RECOGNIZER_ENDPOINT = os.environ.get('AZURE_FORM_RECOGNIZER_ENDPOINT')
     AZURE_FORM_RECOGNIZER_KEY = os.environ.get('AZURE_FORM_RECOGNIZER_KEY')
-    # --- End Azure Document AI Configuration ---
+
+    # --- JWT Configuration ---
+    JWT_SECRET_KEY = os.environ.get('JWT_SECRET_KEY')
+    if not JWT_SECRET_KEY:
+        print("Warning: JWT_SECRET_KEY not set in .env. Using a temporary default key. THIS IS INSECURE FOR PRODUCTION.")
+        JWT_SECRET_KEY = secrets.token_hex(32) # Generate a strong random key for JWT
+    
+    JWT_ACCESS_TOKEN_EXPIRES = timedelta(hours=1) # Example: tokens expire in 1 hour
+    JWT_REFRESH_TOKEN_EXPIRES = timedelta(days=30) # Example for refresh tokens
+    # --- End JWT Configuration ---
+
 
     if SESSION_TYPE == 'filesystem' and not os.path.exists(SESSION_FILE_DIR):
         try:
@@ -48,7 +58,6 @@ class Config:
 config = Config()
 
 def ensure_upload_folders_exist():
-    """Checks if upload folders exist and creates them if not."""
     folders_to_check = [config.UPLOAD_FOLDER, config.EXPENSE_INVOICE_UPLOAD_FOLDER]
     for folder in folders_to_check:
         if not os.path.exists(folder):
