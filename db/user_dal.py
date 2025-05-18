@@ -27,8 +27,8 @@ def create_user(username, password, email=None, user_data=None):
             "email": email,
             "created_date": now,
             "updated_date": now,
-            "is_active": True, # Default to active
-            **(user_data if user_data else {}) # Additional user data
+            "is_active": True, 
+            **(user_data if user_data else {})
         }
         
         result = db[USER_COLLECTION].insert_one(new_user)
@@ -64,4 +64,20 @@ def get_user_by_id(user_id):
         return db[USER_COLLECTION].find_one({"_id": ObjectId(user_id)})
     except Exception as e:
         logging.error(f"Error fetching user by ID {user_id}: {e}")
+        raise
+
+def get_test_users(limit=5):
+    """
+    Fetches a specified number of users (username and email only) for testing.
+    """
+    try:
+        db = mongo.db
+        # Fetch specified fields, limit the results, and sort by creation date (optional)
+        users_cursor = db[USER_COLLECTION].find(
+            {}, # Empty filter to get all users
+            {"username": 1, "email": 1, "_id": 0} # Projection: 1 to include, 0 to exclude
+        ).sort("created_date", 1).limit(limit) # Sort by oldest first, limit to N users
+        return list(users_cursor)
+    except Exception as e:
+        logging.error(f"Error fetching test users: {e}")
         raise

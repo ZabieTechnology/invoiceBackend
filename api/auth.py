@@ -4,12 +4,13 @@ import logging
 from flask_jwt_extended import create_access_token, jwt_required, get_jwt_identity
 from datetime import timedelta
 
-from db.user_dal import create_user, get_user_by_username, verify_password
+# Updated import to include get_test_users
+from db.user_dal import create_user, get_user_by_username, verify_password, get_test_users
 
 auth_bp = Blueprint(
     'auth_bp',
     __name__,
-    url_prefix='/api/auth' # Changed from /login to /api/auth for grouping
+    url_prefix='/api/auth'
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -22,19 +23,17 @@ def register():
 
     username = data['username']
     password = data['password']
-    email = data.get('email') # Optional email
+    email = data.get('email')
 
     try:
         existing_user = get_user_by_username(username)
         if existing_user:
-            return jsonify({"message": "Username already exists"}), 409 # Conflict
+            return jsonify({"message": "Username already exists"}), 409
 
         user_id = create_user(username, password, email)
         if user_id:
             return jsonify({"message": "User created successfully", "userId": str(user_id)}), 201
         else:
-            # This case should ideally be caught by the existing_user check,
-            # but as a fallback if create_user returns None for other reasons.
             return jsonify({"message": "User registration failed"}), 500
             
     except Exception as e:
@@ -53,20 +52,11 @@ def login():
     try:
         user = get_user_by_username(username)
         if user and verify_password(user['password_hash'], password):
-            if not user.get('is_active', True): # Check if user is active
+            if not user.get('is_active', True):
                 return jsonify({"message": "User account is inactive"}), 403
 
-            # Create JWT token
-            # expires_delta can be configured via app.config['JWT_ACCESS_TOKEN_EXPIRES']
-            access_token = create_access_token(
-                identity=str(user['_id']), # Store user's MongoDB ObjectId as string
-                # additional_claims={"username": user['username'], "email": user.get('email')} # Optional additional claims
-            )
+            access_token = create_access_token(identity=str(user['_id']))
             
-            # Store user info in session (optional, if you still use Flask-Session for other things)
-            # session['user_id'] = str(user['_id'])
-            # session['username'] = user['username']
-
             logging.info(f"User '{username}' logged in successfully.")
             return jsonify(access_token=access_token, username=user['username']), 200
         else:
@@ -77,12 +67,22 @@ def login():
         logging.error(f"Error during login for {username}: {e}")
         return jsonify({"message": "An error occurred during login"}), 500
 
-# Example protected route using JWT (can be in any blueprint)
 @auth_bp.route('/profile', methods=['GET'])
-@jwt_required() # This decorator ensures the request has a valid JWT
+@jwt_required()
 def profile():
-    current_user_id = get_jwt_identity() # Retrieves the identity stored in the token
-    # You can then fetch user details from DB using this ID if needed
-    # For now, just return the ID
+    current_user_id = get_jwt_identity()
     return jsonify(logged_in_as_id=current_user_id), 200
 
+# --- New endpoint for fetching test users ---
+@auth_bp.route('/test-users', methods=['GET'])
+def test_users():
+    """
+    Endpoint to fetch a few users for testing DB connectivity.
+    This should ideally be removed or secured in a production environment.
+    """
+    try:
+        users = get_test_users(limit=5) # Get top 5 users
+        return jsonify(users), 200
+    except Exception as e:
+        logging.error(f"Error fetching test users for API: {e}")
+        return jsonify({"message": "Failed to fetch test users"}), 500
