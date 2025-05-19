@@ -2,7 +2,7 @@
 import os
 from dotenv import load_dotenv
 import secrets
-from datetime import timedelta # For JWT expiration
+from datetime import timedelta
 
 basedir = os.path.abspath(os.path.dirname(__file__))
 dotenv_path = os.path.join(basedir, '.env')
@@ -28,23 +28,24 @@ class Config:
     SESSION_USE_SIGNER = True
     SESSION_FILE_DIR = os.path.join(basedir, '.flask_session')
     
-    UPLOAD_FOLDER = os.path.join(basedir, 'uploads', 'logos')
+    UPLOAD_FOLDER = os.path.join(basedir, 'uploads', 'logos') # For company logos
     EXPENSE_INVOICE_UPLOAD_FOLDER = os.path.join(basedir, 'uploads', 'expense_invoices')
-    ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'svg', 'pdf'}
+    
+    # --- Invoice Settings Upload Configuration ---
+    SIGNATURE_UPLOAD_FOLDER = os.path.join(basedir, 'uploads', 'signatures')
+    ALLOWED_SIGNATURE_EXTENSIONS = {'png', 'jpg', 'jpeg'} # More restrictive for signatures
+    # --- End Invoice Settings Upload Configuration ---
 
     AZURE_FORM_RECOGNIZER_ENDPOINT = os.environ.get('AZURE_FORM_RECOGNIZER_ENDPOINT')
     AZURE_FORM_RECOGNIZER_KEY = os.environ.get('AZURE_FORM_RECOGNIZER_KEY')
 
-    # --- JWT Configuration ---
     JWT_SECRET_KEY = os.environ.get('JWT_SECRET_KEY')
     if not JWT_SECRET_KEY:
         print("Warning: JWT_SECRET_KEY not set in .env. Using a temporary default key. THIS IS INSECURE FOR PRODUCTION.")
-        JWT_SECRET_KEY = secrets.token_hex(32) # Generate a strong random key for JWT
+        JWT_SECRET_KEY = secrets.token_hex(32)
     
-    JWT_ACCESS_TOKEN_EXPIRES = timedelta(hours=1) # Example: tokens expire in 1 hour
-    JWT_REFRESH_TOKEN_EXPIRES = timedelta(days=30) # Example for refresh tokens
-    # --- End JWT Configuration ---
-
+    JWT_ACCESS_TOKEN_EXPIRES = timedelta(hours=1)
+    JWT_REFRESH_TOKEN_EXPIRES = timedelta(days=30)
 
     if SESSION_TYPE == 'filesystem' and not os.path.exists(SESSION_FILE_DIR):
         try:
@@ -58,9 +59,14 @@ class Config:
 config = Config()
 
 def ensure_upload_folders_exist():
-    folders_to_check = [config.UPLOAD_FOLDER, config.EXPENSE_INVOICE_UPLOAD_FOLDER]
+    """Checks if all configured upload folders exist and creates them if not."""
+    folders_to_check = [
+        config.UPLOAD_FOLDER, 
+        config.EXPENSE_INVOICE_UPLOAD_FOLDER,
+        config.SIGNATURE_UPLOAD_FOLDER # Add new folder here
+    ]
     for folder in folders_to_check:
-        if not os.path.exists(folder):
+        if folder and not os.path.exists(folder): # Check if folder path is defined
             try:
                 os.makedirs(folder)
                 print(f"Created upload folder: {folder}")
