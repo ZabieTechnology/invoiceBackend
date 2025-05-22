@@ -20,6 +20,7 @@ from api.expenses import expenses_bp
 from api.document_ai import document_ai_bp
 from api.auth import auth_bp
 from api.invoice_settings import invoice_settings_bp
+from api.gst_rates import gst_rates_bp
 
 def create_app():
     app = Flask(__name__)
@@ -66,6 +67,7 @@ def create_app():
     app.register_blueprint(document_ai_bp)
     app.register_blueprint(auth_bp)
     app.register_blueprint(invoice_settings_bp)
+    app.register_blueprint(gst_rates_bp)
 
 
     @app.route('/api/test/set-session/<name>')
