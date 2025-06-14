@@ -21,11 +21,13 @@ from api.document_ai import document_ai_bp
 from api.auth import auth_bp
 from api.invoice_settings import invoice_settings_bp
 from api.gst_rates import gst_rates_bp
+from api.inventory import inventory_bp
+from api.sales_invoices import sales_invoices_bp
 
 def create_app():
     app = Flask(__name__)
     app.config.from_object(config)
-    ensure_upload_folders_exist()
+    # ensure_upload_folders_exist()
 
     # --- Updated CORS Configuration ---
     # Define allowed origins. It's good practice to get the production origin
@@ -55,6 +57,8 @@ def create_app():
         app.config['SESSION_MONGODB_COLLECT'] = config.SESSION_MONGODB_COLLECT
     Session(app)
 
+
+
     # Register Blueprints
     app.register_blueprint(dropdown_bp)
     app.register_blueprint(company_info_bp)
@@ -68,6 +72,8 @@ def create_app():
     app.register_blueprint(auth_bp)
     app.register_blueprint(invoice_settings_bp)
     app.register_blueprint(gst_rates_bp)
+    app.register_blueprint(inventory_bp)
+    app.register_blueprint(sales_invoices_bp)
 
 
     @app.route('/api/test/set-session/<name>')

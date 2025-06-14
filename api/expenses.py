@@ -16,7 +16,7 @@ from db.expense_dal import (
     delete_expense_by_id,
     parse_date_string
 )
-# from db.activity_log_dal import add_activity # Logging is now primarily in DAL
+# Activity logging is primarily handled in the DAL.
 
 expenses_bp = Blueprint(
     'expenses_bp',
@@ -37,26 +37,15 @@ def save_invoice_file(file_storage, tenant_id):
     """Saves the uploaded invoice file and returns its filename or path."""
     if file_storage and file_storage.filename:
         upload_folder = current_app.config.get('EXPENSE_INVOICE_UPLOAD_FOLDER')
-
-        # Robustly get allowed_extensions
         allowed_extensions = current_app.config.get('ALLOWED_EXTENSIONS')
         if allowed_extensions is None:
-            logging.warning(
-                "ALLOWED_EXTENSIONS not found in app.config. "
-                "Using a default set: {'png', 'jpg', 'jpeg', 'gif', 'svg', 'pdf'}"
-            )
+            logging.warning("ALLOWED_EXTENSIONS not found in app.config. Using default.")
             allowed_extensions = {'png', 'jpg', 'jpeg', 'gif', 'svg', 'pdf'}
-        elif not isinstance(allowed_extensions, set): # Ensure it's a set
-            logging.warning(
-                f"ALLOWED_EXTENSIONS in app.config is not a set (type: {type(allowed_extensions)}). "
-                "Converting or using default."
-            )
-            try:
-                allowed_extensions = set(allowed_extensions)
+        elif not isinstance(allowed_extensions, set):
+            try: allowed_extensions = set(allowed_extensions)
             except TypeError:
-                logging.error("Failed to convert ALLOWED_EXTENSIONS to a set. Using default.")
+                logging.error("Failed to convert ALLOWED_EXTENSIONS to set. Using default.")
                 allowed_extensions = {'png', 'jpg', 'jpeg', 'gif', 'svg', 'pdf'}
-
 
         if not upload_folder:
             logging.error("Expense invoice upload folder is not configured.")
@@ -64,7 +53,6 @@ def save_invoice_file(file_storage, tenant_id):
 
         filename = secure_filename(file_storage.filename)
         if '.' not in filename or filename.rsplit('.', 1)[1].lower() not in allowed_extensions:
-            # Construct the error message with the now guaranteed 'allowed_extensions' set
             allowed_extensions_str = ', '.join(allowed_extensions)
             raise ValueError(f"File type not allowed. Allowed: {allowed_extensions_str}")
 
@@ -80,17 +68,39 @@ def save_invoice_file(file_storage, tenant_id):
         return unique_filename
     return None
 
+def _prepare_document_for_json(doc):
+    """
+    Recursively converts ObjectId and datetime fields in a document (or sub-document/list)
+    to strings for JSON serialization.
+    """
+    if isinstance(doc, list):
+        return [_prepare_document_for_json(item) for item in doc]
+    if isinstance(doc, dict):
+        new_doc = {}
+        for key, value in doc.items():
+            if isinstance(value, ObjectId):
+                new_doc[key] = str(value)
+            elif isinstance(value, datetime):
+                new_doc[key] = value.isoformat()
+            elif isinstance(value, (dict, list)):
+                new_doc[key] = _prepare_document_for_json(value)
+            else:
+                new_doc[key] = value
+        return new_doc
+    if hasattr(doc, 'to_decimal'):
+        return float(doc.to_decimal())
+    return doc
+
 
 @expenses_bp.route('', methods=['POST'])
 def handle_create_expense():
     if 'multipart/form-data' not in request.content_type:
         return jsonify({"message": "Content-Type must be multipart/form-data"}), 415
 
-    if not request.form:
-        return jsonify({"message": "No form data provided"}), 400
-
+    if not request.form: return jsonify({"message": "No form data provided"}), 400
     data = request.form.to_dict(flat=True)
 
+    # Required fields check from frontend AddExpensePage
     if not data.get('billDate') or not data.get('supplierId') or \
        not data.get('expenseHeadId') or not data.get('totalAmount'):
         return jsonify({"message": "Missing required fields: Bill Date, Supplier, Expense Head, Total Amount"}), 400
@@ -106,19 +116,15 @@ def handle_create_expense():
                 invoice_filename = save_invoice_file(invoice_file, current_tenant)
                 data['invoiceFilename'] = invoice_filename
 
+        # The DAL (create_expense) handles detailed field mapping,
+        # ObjectId conversion, date parsing, float parsing, and lineItems JSON parsing.
+        # It also calculates taxAmount from individual components.
         expense_id = create_expense(data, user=current_user, tenant_id=current_tenant)
 
         created_expense = get_expense_by_id(str(expense_id), tenant_id=current_tenant)
         if created_expense:
-            created_expense['_id'] = str(created_expense['_id'])
-            if isinstance(created_expense.get('billDate'), datetime):
-                created_expense['billDate'] = created_expense['billDate'].strftime('%Y-%m-%d')
-            if isinstance(created_expense.get('dueDate'), datetime):
-                created_expense['dueDate'] = created_expense['dueDate'].strftime('%Y-%m-%d')
-            for key in ['supplierId', 'expenseHeadId', 'gstRateId']:
-                if key in created_expense and isinstance(created_expense[key], ObjectId):
-                    created_expense[key] = str(created_expense[key])
-            return jsonify({"message": "Expense created successfully", "data": created_expense}), 201
+            prepared_expense = _prepare_document_for_json(dict(created_expense))
+            return jsonify({"message": "Expense created successfully", "data": prepared_expense}), 201
         else:
             return jsonify({"message": "Expense created, but failed to retrieve."}), 201
     except ValueError as ve:
@@ -136,15 +142,8 @@ def handle_get_expense(expense_id):
         current_tenant = get_current_tenant_id()
         expense = get_expense_by_id(expense_id, tenant_id=current_tenant)
         if expense:
-            expense['_id'] = str(expense['_id'])
-            if isinstance(expense.get('billDate'), datetime):
-                expense['billDate'] = expense['billDate'].strftime('%Y-%m-%d')
-            if isinstance(expense.get('dueDate'), datetime):
-                expense['dueDate'] = expense['dueDate'].strftime('%Y-%m-%d')
-            for key in ['supplierId', 'expenseHeadId', 'gstRateId']:
-                if key in expense and isinstance(expense[key], ObjectId):
-                    expense[key] = str(expense[key])
-            return jsonify(expense), 200
+            prepared_expense = _prepare_document_for_json(dict(expense))
+            return jsonify(prepared_expense), 200
         else:
             return jsonify({"message": "Expense not found"}), 404
     except Exception as e:
@@ -163,20 +162,20 @@ def handle_get_all_api_expenses():
         order_str = request.args.get("sortOrder", "desc")
         sort_order = -1 if order_str.lower() == "desc" else 1
 
-        supplier_filter = request.args.get("supplier", None)
+        status_filter = request.args.get("status", None)
+        supplier_name_filter = request.args.get("supplierName", None)
         date_from_str = request.args.get("dateFrom", None)
         date_to_str = request.args.get("dateTo", None)
 
         filters = {}
         if search_term:
-            regex_query = {"$regex": re.escape(search_term), "$options": "i"}
-            filters["$or"] = [
-                {"billNo": regex_query},
-                {"narration": regex_query},
-                {"lineItems.description": regex_query}
-            ]
-        if supplier_filter and ObjectId.is_valid(supplier_filter):
-            filters["supplierId"] = ObjectId(supplier_filter)
+            filters["$text_search_term"] = search_term
+
+        if supplier_name_filter:
+            filters["supplierName"] = {"$regex": re.escape(supplier_name_filter), "$options": "i"}
+
+        if status_filter and status_filter != "All":
+            filters["status"] = status_filter
 
         if date_from_str:
             parsed_date_from = parse_date_string(date_from_str)
@@ -189,18 +188,24 @@ def handle_get_all_api_expenses():
 
         result = []
         for item in expense_list:
-            item['_id'] = str(item['_id'])
-            if isinstance(item.get('billDate'), datetime):
-                item['billDate'] = item['billDate'].strftime('%d/%m/%Y')
-            if isinstance(item.get('dueDate'), datetime):
-                item['dueDate'] = item['dueDate'].strftime('%d/%m/%Y')
-            for key in ['supplierId', 'expenseHeadId', 'gstRateId']:
-                if key in item and isinstance(item[key], ObjectId):
-                    item[key] = str(item[key])
-            for field in ['totalAmount', 'gstVatAmount', 'netAmount', 'subTotalFromItems', 'discountAmount', 'taxFromItems', 'grandTotalFromItems']:
-                if field in item and isinstance(item[field], (int, float)):
-                    item[field] = f"{item[field]:.2f}"
-            result.append(item)
+            prepared_item = _prepare_document_for_json(dict(item))
+            # Format date for display in list view (dd/MM/yyyy)
+            if prepared_item.get('billDate') and isinstance(prepared_item['billDate'], str) and '-' in prepared_item['billDate']:
+                 try:
+                     dt_obj = datetime.fromisoformat(prepared_item['billDate'].replace('Z', '+00:00'))
+                     prepared_item['billDate'] = dt_obj.strftime('%d/%m/%Y')
+                 except ValueError: pass
+            if prepared_item.get('dueDate') and isinstance(prepared_item['dueDate'], str) and '-' in prepared_item['dueDate']:
+                 try:
+                     dt_obj = datetime.fromisoformat(prepared_item['dueDate'].replace('Z', '+00:00'))
+                     prepared_item['dueDate'] = dt_obj.strftime('%d/%m/%Y')
+                 except ValueError: pass
+
+            # Format currency fields for display
+            for field in ['totalAmount', 'taxAmount', 'netAmount', 'subTotalFromItems', 'discountAmount', 'cgstAmount', 'sgstAmount', 'igstAmount', 'cessAmount', 'tdsAmountCalculated']:
+                if field in prepared_item and isinstance(prepared_item[field], (int, float)):
+                    prepared_item[field] = f"{prepared_item[field]:.2f}"
+            result.append(prepared_item)
 
         return jsonify({
             "data": result, "total": total_items, "page": page,
@@ -217,14 +222,14 @@ def handle_get_all_api_expenses():
 def handle_update_expense(expense_id):
     if not ObjectId.is_valid(expense_id):
         return jsonify({"message": "Invalid expense ID format"}), 400
-    if 'multipart/form-data' not in request.content_type:
-        data = request.get_json()
-        if not data:
-            return jsonify({"message": "No JSON data provided for update"}), 400
-    else:
+
+    data = {}
+    if 'multipart/form-data' in request.content_type:
         data = request.form.to_dict(flat=True)
-        if not data:
-            return jsonify({"message": "No form data provided for update"}), 400
+    elif request.is_json:
+        data = request.get_json()
+
+    if not data: return jsonify({"message": "No data provided for update"}), 400
 
     if not data.get('billDate') or not data.get('supplierId') or \
        not data.get('expenseHeadId') or not data.get('totalAmount'):
@@ -239,6 +244,8 @@ def handle_update_expense(expense_id):
             if invoice_file and invoice_file.filename:
                 invoice_filename = save_invoice_file(invoice_file, current_tenant)
                 data['invoiceFilename'] = invoice_filename
+            elif 'invoiceFilename' not in data:
+                data['invoiceFilename'] = None # Explicitly clear if no new file and not in form
 
         matched_count = update_expense(expense_id, data, user=current_user, tenant_id=current_tenant)
         if matched_count == 0:
@@ -246,15 +253,8 @@ def handle_update_expense(expense_id):
 
         updated_expense = get_expense_by_id(expense_id, tenant_id=current_tenant)
         if updated_expense:
-            updated_expense['_id'] = str(updated_expense['_id'])
-            if isinstance(updated_expense.get('billDate'), datetime):
-                updated_expense['billDate'] = updated_expense['billDate'].strftime('%Y-%m-%d')
-            if isinstance(updated_expense.get('dueDate'), datetime):
-                updated_expense['dueDate'] = updated_expense['dueDate'].strftime('%Y-%m-%d')
-            for key in ['supplierId', 'expenseHeadId', 'gstRateId']:
-                if key in updated_expense and isinstance(updated_expense[key], ObjectId):
-                    updated_expense[key] = str(updated_expense[key])
-            return jsonify({"message": "Expense updated successfully", "data": updated_expense}), 200
+            prepared_expense = _prepare_document_for_json(dict(updated_expense))
+            return jsonify({"message": "Expense updated successfully", "data": prepared_expense}), 200
         else:
             return jsonify({"message": "Expense updated, but failed to retrieve."}), 200
     except ValueError as ve:

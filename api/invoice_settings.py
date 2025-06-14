@@ -1,142 +1,121 @@
 # api/invoice_settings.py
-from flask import Blueprint, request, jsonify, session, current_app
-import logging
+from flask import Blueprint, request, jsonify, current_app
+from werkzeug.utils import secure_filename
 import os
-from werkzeug.utils import secure_filename # For signature image upload
-from datetime import datetime
+import json
+from db.invoice_settings_dal import get_invoice_settings, save_invoice_settings, get_default_theme
+from db.database import get_db
 
-from db.invoice_settings_dal import get_invoice_settings, save_invoice_settings
+invoice_settings_bp = Blueprint('invoice_settings_bp', __name__, url_prefix='/api/invoice-settings')
 
-invoice_settings_bp = Blueprint(
-    'invoice_settings_bp',
-    __name__,
-    url_prefix='/api/invoice-settings'
-)
-
-logging.basicConfig(level=logging.INFO)
-
-# --- Configuration for Signature Uploads ---
-# Ensure this folder exists or is created by your app setup
-# It's good to have a separate folder for invoice-related uploads
-SIGNATURE_UPLOAD_FOLDER_CONFIG_KEY = 'SIGNATURE_UPLOAD_FOLDER' # Key to get path from app.config
-ALLOWED_SIGNATURE_EXTENSIONS = {'png', 'jpg', 'jpeg'}
+ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif'}
 
 def allowed_file(filename):
-    allowed_extensions = current_app.config.get('ALLOWED_SIGNATURE_EXTENSIONS', ALLOWED_SIGNATURE_EXTENSIONS)
-    return '.' in filename and \
-           filename.rsplit('.', 1)[1].lower() in allowed_extensions
-
-def get_current_user_id(): # Or username, depending on your auth
-    # Placeholder: Integrate with your actual authentication system
-    # For JWT, you might use get_jwt_identity()
-    return session.get('user_id', 'anonymous_user') 
-
-def get_current_tenant_id():
-    # Placeholder: If multi-tenant, get tenant ID from session or user object
-    return "default_tenant" # Replace with actual tenant logic
-
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 @invoice_settings_bp.route('', methods=['GET'])
-def handle_get_invoice_settings():
-    """Handles GET requests to fetch invoice settings."""
+def handle_get_invoice_settings(current_user_id=None): # Replace with actual user handling
+    db = get_db()
+    settings = get_invoice_settings(db, user_id=current_user_id)
+    # get_invoice_settings from DAL v3 returns a structure with defaults if not found
+    return jsonify(settings), 200
+
+@invoice_settings_bp.route('', methods=['POST'])
+def handle_save_invoice_settings(current_user_id=None): # Replace with actual user handling
+    db = get_db()
+
     try:
-        tenant_id = get_current_tenant_id() # Implement this based on your app
-        settings = get_invoice_settings(tenant_id=tenant_id)
-        if settings and '_id' in settings: # Ensure _id is stringified
-            settings['_id'] = str(settings['_id'])
-        return jsonify(settings), 200
+        global_settings_data_str = request.form.get('global')
+        saved_themes_list_str = request.form.get('savedThemes')
+
+        if not global_settings_data_str or not saved_themes_list_str:
+            current_app.logger.error("Missing 'global' or 'savedThemes' in form data.")
+            return jsonify({"message": "Missing 'global' or 'savedThemes' data."}), 400
+
+        global_settings_data = json.loads(global_settings_data_str)
+        saved_themes_list = json.loads(saved_themes_list_str) # This should be a list of theme profile dicts
+
+        if not isinstance(global_settings_data, dict) or not isinstance(saved_themes_list, list):
+            raise ValueError("Parsed 'global' must be a dict and 'savedThemes' must be a list.")
+
+        # Deprecated field 'decrementInvoiceNumberOnDelete' is handled by DAL if present in old data.
+        # API layer doesn't need to explicitly remove it from global_settings_data if DAL does.
+
+    except json.JSONDecodeError as e:
+        current_app.logger.error(f"JSON Decode Error in settings: {e}. Global: '{request.form.get('global', 'Not Provided')}', Themes: '{request.form.get('savedThemes', 'Not Provided')}'")
+        return jsonify({"message": "Invalid JSON format for global settings or saved themes."}), 400
+    except ValueError as e:
+        current_app.logger.error(f"Data type error after parsing: {e}")
+        return jsonify({"message": str(e)}), 400
     except Exception as e:
-        logging.error(f"Error in handle_get_invoice_settings: {e}")
-        return jsonify({"message": "Failed to fetch invoice settings"}), 500
+        current_app.logger.error(f"Error parsing form data for settings: {e}")
+        return jsonify({"message": "Error processing settings data."}), 400
 
-@invoice_settings_bp.route('', methods=['POST', 'PUT']) # Using POST for create/update via upsert
-def handle_save_invoice_settings():
-    """
-    Handles POST/PUT requests to save invoice settings.
-    Accepts multipart/form-data if a signature image is included.
-    Otherwise, accepts application/json.
-    """
+    upload_folder_base = current_app.config['UPLOAD_FOLDER']
+    if not os.path.exists(upload_folder_base):
+        os.makedirs(upload_folder_base)
+
+    # Iterate through each theme profile in the list to update its image URLs based on uploaded files
+    for theme_profile in saved_themes_list:
+        theme_id = theme_profile.get('id')
+        if not theme_id:
+            # DAL will assign an ID if missing, but file uploads need a stable ID from client
+            current_app.logger.warning(f"Theme profile found without ID during file processing: {theme_profile.get('profileName')}")
+            # Potentially skip file processing for this theme or assign a temporary ID if absolutely necessary
+            # However, frontend should always send theme profiles with IDs.
+            continue
+
+        image_fields_map = {
+            'signatureImage': {'url_field': 'signatureImageUrl', 'subfolder': 'signatures', 'remove_flag_prefix': 'removeSignature'},
+            'upiQrCodeImage': {'url_field': 'upiQrCodeImageUrl', 'subfolder': 'upi_qr', 'remove_flag_prefix': 'removeUpiQrCode'},
+            'invoiceFooterImage': {'url_field': 'invoiceFooterImageUrl', 'subfolder': 'footers', 'remove_flag_prefix': 'removeFooterImage'}
+        }
+
+        for form_field_key_prefix, details in image_fields_map.items():
+            form_file_key = f"{form_field_key_prefix}_{theme_id}" # e.g., signatureImage_themeProfileId123
+            form_remove_flag_key = f"{details['remove_flag_prefix']}_{theme_id}" # e.g., removeSignature_themeProfileId123
+
+            subfolder_path = os.path.join(upload_folder_base, details['subfolder'])
+            if not os.path.exists(subfolder_path):
+                os.makedirs(subfolder_path)
+
+            if request.form.get(form_remove_flag_key) == 'true':
+                theme_profile[details['url_field']] = "" # Clear URL if remove flag is set
+                # Optionally delete old file from server here if you store the old filename in theme_profile
+            elif form_file_key in request.files:
+                file = request.files[form_file_key]
+                if file and file.filename != '' and allowed_file(file.filename):
+                    # Prepend theme_id to filename for better organization and uniqueness
+                    filename = secure_filename(f"{theme_id}_{file.filename}")
+                    save_path = os.path.join(subfolder_path, filename)
+                    try:
+                        file.save(save_path)
+                        theme_profile[details['url_field']] = f"/uploads/{details['subfolder']}/{filename}"
+                    except Exception as e_save:
+                        current_app.logger.error(f"Error saving file {filename}: {e_save}")
+                        # Decide if this should be a fatal error or just a warning
+                        return jsonify({"message": f"Error saving file {filename} for theme '{theme_profile.get('profileName')}'"}), 500
+                elif file.filename != '': # File present but not allowed type
+                    return jsonify({"message": f"File type not allowed for {form_file_key} of theme '{theme_profile.get('profileName')}'"}), 400
+            # If no new file and no remove flag, the existing URL (already in theme_profile from parsed JSON) is kept.
+
     try:
-        user = get_current_user_id()
-        tenant_id = get_current_tenant_id()
-        signature_filename_to_save = None
-        
-        # Check content type for handling file upload vs JSON
-        if 'multipart/form-data' in request.content_type:
-            data = request.form.to_dict(flat=True) # Get non-file form fields
-            # Convert string booleans from form data
-            boolean_fields = ['enableReceiverSignature'] # Add more if needed
-            for field in boolean_fields:
-                if field in data:
-                    data[field] = data[field].lower() == 'true'
-            
-            # Handle itemTableColumns (assuming sent as JSON string in form data)
-            if 'itemTableColumns' in data and isinstance(data['itemTableColumns'], str):
-                import json
-                try:
-                    data['itemTableColumns'] = json.loads(data['itemTableColumns'])
-                except json.JSONDecodeError:
-                    return jsonify({"message": "Invalid JSON format for itemTableColumns"}), 400
-            
-            if 'customItemColumns' in data and isinstance(data['customItemColumns'], str):
-                import json
-                try:
-                    data['customItemColumns'] = json.loads(data['customItemColumns'])
-                except json.JSONDecodeError:
-                    return jsonify({"message": "Invalid JSON format for customItemColumns"}), 400
-
-
-            if 'signatureImage' in request.files:
-                file = request.files['signatureImage']
-                if file and file.filename and allowed_file(file.filename):
-                    upload_folder = current_app.config.get(SIGNATURE_UPLOAD_FOLDER_CONFIG_KEY)
-                    if not upload_folder:
-                        logging.error("Signature upload folder is not configured.")
-                        return jsonify({"message": "File upload path not configured."}), 500
-                    
-                    # Create a unique filename
-                    timestamp = datetime.utcnow().strftime('%Y%m%d%H%M%S%f')
-                    secure_base_filename = secure_filename(file.filename)
-                    filename = f"signature_{tenant_id}_{timestamp}_{secure_base_filename}"
-                    
-                    if not os.path.exists(upload_folder):
-                        os.makedirs(upload_folder)
-                        logging.info(f"Created signature upload folder: {upload_folder}")
-                    
-                    file_path = os.path.join(upload_folder, filename)
-                    file.save(file_path)
-                    signature_filename_to_save = filename # Store relative path or just filename
-                    logging.info(f"Signature '{filename}' uploaded successfully for tenant {tenant_id}.")
-                elif file and file.filename: # File selected but not allowed type
-                    allowed_types_str = ', '.join(current_app.config.get('ALLOWED_SIGNATURE_EXTENSIONS', ALLOWED_SIGNATURE_EXTENSIONS))
-                    return jsonify({"message": f"File type not allowed for signature. Allowed: {allowed_types_str}"}), 400
-        else: # Assuming application/json
-            data = request.get_json()
-            if not data:
-                return jsonify({"message": "No data provided"}), 400
-
-        # If a new signature was uploaded, add/update its path in the data to be saved
-        if signature_filename_to_save:
-            data['signatureImageUrl'] = signature_filename_to_save 
-        elif 'signatureImageUrl' not in data and request.method in ['POST', 'PUT']:
-            # If signatureImageUrl is not in the payload for an update,
-            # it implies the client wants to keep the existing one or clear it.
-            # If you want to clear it if not sent, add: data['signatureImageUrl'] = None
-            pass
-
-
-        result_id_or_objid = save_invoice_settings(data, user=user, tenant_id=tenant_id)
-
-        if result_id_or_objid:
-            # Fetch the latest settings to return
-            saved_settings = get_invoice_settings(tenant_id=tenant_id)
-            if saved_settings and '_id' in saved_settings:
-                saved_settings['_id'] = str(saved_settings['_id'])
-            return jsonify({"message": "Invoice settings saved successfully", "data": saved_settings}), 200
+        # The DAL function will handle merging with defaults and ensuring data integrity
+        saved_settings_doc = save_invoice_settings(db, global_settings_data, saved_themes_list, user_id=current_user_id)
+        if saved_settings_doc:
+            return jsonify({"message": "Invoice settings saved successfully!", "data": saved_settings_doc}), 200
         else:
-            return jsonify({"message": "Failed to save invoice settings"}), 500
-
+            # This case might indicate an issue in the DAL if it's supposed to always return a doc
+            return jsonify({"message": "Failed to save settings or no changes made."}), 500
     except Exception as e:
-        logging.exception(f"Error in handle_save_invoice_settings: {e}")
-        return jsonify({"message": "An internal error occurred"}), 500
+        current_app.logger.error(f"Error saving invoice settings to DB: {e}")
+        return jsonify({"message": "An error occurred while saving settings to database.", "error": str(e)}), 500
+
+
+@invoice_settings_bp.route('/default-theme', methods=['GET'])
+def handle_get_default_theme(current_user_id=None): # Replace with actual user handling
+    db = get_db()
+    theme_profile = get_default_theme(db, user_id=current_user_id)
+    # get_default_theme from DAL v3 returns a full theme profile object
+    return jsonify(theme_profile), 200
 

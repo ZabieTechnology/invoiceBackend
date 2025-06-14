@@ -25,3 +25,4 @@ Werkzeug>=2.0 # For password hashing (usually a Flask dependency)
 # Add other dependencies as needed
 azure-ai-formrecognizer
 azure-identity
+reportlab

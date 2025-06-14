@@ -3,92 +3,88 @@ from bson.objectid import ObjectId
 from datetime import datetime
 import logging
 
-# Import the mongo instance from the central database module
-from .database import mongo
+# Removed: from .database import mongo
+from .activity_log_dal import add_activity
 
-COMPANY_INFO_COLLECTION = 'company_information' # Define collection name constant
+COMPANY_INFO_COLLECTION = 'company_information'
+logging.basicConfig(level=logging.INFO)
 
-def get_company_information():
+def get_company_information(db_conn, tenant_id="default_tenant"):
     """
-    Fetches the first company information document found.
-    Assumes a single document for simplicity, or the relevant one based on context.
-
-    Returns:
-        dict or None: The company information document if found, otherwise None.
-    Raises:
-        Exception: If there's an error during database interaction.
+    Fetches the company information document for a specific tenant.
     """
     try:
-        db = mongo.db
-        # In a multi-tenant app, you would add a filter here, e.g., {'tenant_id': current_user_tenant}
-        # find_one() returns None if no document matches
-        return db[COMPANY_INFO_COLLECTION].find_one()
+        company_info = db_conn[COMPANY_INFO_COLLECTION].find_one({"tenant_id": tenant_id})
+        if company_info and '_id' in company_info:
+            company_info['_id'] = str(company_info['_id'])
+        return company_info
     except Exception as e:
-        logging.error(f"Error fetching company information: {e}")
-        raise # Re-raise the exception to be handled by the API layer
+        logging.error(f"Error fetching company information for tenant {tenant_id}: {e}")
+        raise
 
-def create_or_update_company_information(data, user="System"):
+def create_or_update_company_information(db_conn, data, user="System", tenant_id="default_tenant"):
     """
-    Creates a new company information document or updates the existing one using upsert.
-    Handles logo filename separately if provided.
-
-    Args:
-        data (dict): Dictionary containing company information fields.
-        user (str): The user performing the action.
-
-    Returns:
-        ObjectId or None: The ObjectId of the inserted/updated document or None on failure.
-    Raises:
-        Exception: If there's an error during database interaction.
+    Creates a new company information document or updates the existing one for a specific tenant using upsert.
+    Ensures 'created_date' and 'tenant_id' are only set on insert and not in the update '$set' part.
     """
     try:
-        db = mongo.db
         now = datetime.utcnow()
-        # Add/update metadata fields directly in the input data dictionary
-        data['updated_date'] = now
-        data['updated_user'] = user
 
-        # Prepare update data for $set, excluding _id if present in input `data`
-        # This prevents trying to modify the immutable _id field during an update
-        update_data = {k: v for k, v in data.items() if k != '_id'}
+        # Prepare update data for $set, excluding _id, created_date, and tenant_id
+        update_data_set = {k: v for k, v in data.items() if k not in ['_id', 'created_date', 'tenant_id']}
+        update_data_set['updated_date'] = now
+        update_data_set['updated_user'] = user
 
-        # Use upsert=True:
-        # - If a document matches the filter ({}), it gets updated with $set.
-        # - If no document matches, a new one is inserted using fields from
-        #   both $set and $setOnInsert.
-        result = db[COMPANY_INFO_COLLECTION].update_one(
-            {}, # Empty filter assumes updating the single document or the first one found.
-                 # For multi-tenant, filter by tenant_id: {'tenant_id': tenant_id}
+        result = db_conn[COMPANY_INFO_COLLECTION].update_one(
+            {"tenant_id": tenant_id},
             {
-                "$set": update_data,
-                "$setOnInsert": {"created_date": now} # Set created_date only when inserting
+                "$set": update_data_set,
+                "$setOnInsert": {
+                    "created_date": now,
+                    "tenant_id": tenant_id # tenant_id is set on insert
+                    # Add any other fields that should only be set on insert
+                }
             },
-            upsert=True # This is the key option for create-or-update behavior
+            upsert=True
         )
 
-        # Check the result of the upsert operation
+        action_details = f"Company Information for tenant '{tenant_id}' "
+        action_type = ""
+        doc_id = None
+
         if result.upserted_id:
-            # A new document was inserted
-            logging.info(f"Company information created with ID: {result.upserted_id}")
-            return result.upserted_id
+            doc_id = result.upserted_id
+            action_details += f"created. ID: {doc_id}"
+            action_type = "CREATE_COMPANY_INFORMATION"
+            logging.info(action_details)
         elif result.matched_count > 0:
-            # An existing document was updated
-            logging.info("Company information updated.")
-            # If updated, we need to fetch the _id as update_one doesn't return it directly on update
-            # We use the same filter used for the update to retrieve the updated document's ID
-            updated_doc = db[COMPANY_INFO_COLLECTION].find_one({}, {"_id": 1})
-            return updated_doc['_id'] if updated_doc else None # Return the ObjectId
+            updated_doc = db_conn[COMPANY_INFO_COLLECTION].find_one({"tenant_id": tenant_id}, {"_id": 1})
+            doc_id = updated_doc['_id'] if updated_doc else None
+            if result.modified_count > 0:
+                # Log only fields that were actually part of the $set operation, excluding metadata we add
+                changed_fields_by_user = {k:v for k,v in update_data_set.items() if k not in ['updated_date', 'updated_user']}
+                action_details += f"updated. ID: {doc_id}. Changed fields: {list(changed_fields_by_user.keys())}"
+                action_type = "UPDATE_COMPANY_INFORMATION"
+                logging.info(action_details)
+            else:
+                action_details += f"matched but no fields were modified. ID: {doc_id}"
+                logging.info(action_details)
         else:
-             # This case should generally not happen with an empty filter and upsert=True,
-             # unless there was a concurrent deletion or another issue.
-             logging.warning("Company information update/insert operation had no effect (no match, no upsert).")
+             logging.warning(f"Company information update/insert operation for tenant {tenant_id} had no effect (no match, no upsert).")
              return None
 
+        if action_type and doc_id:
+             add_activity(
+                action_type=action_type,
+                user=user,
+                details=action_details,
+                document_id=doc_id,
+                collection_name=COMPANY_INFO_COLLECTION,
+                tenant_id=tenant_id
+            )
+
+        return str(doc_id) if doc_id else None
+
     except Exception as e:
-        logging.error(f"Error creating/updating company information: {e}")
-        raise # Re-raise the exception for the API layer to handle
-
-# Note: The incorrect 'add_companyinformation' function with hardcoded data
-# and syntax errors has been removed as it's redundant and non-functional.
-# The 'create_or_update_company_information' function handles initial creation.
-
+        logging.error(f"Error creating/updating company information for tenant {tenant_id}: {e}")
+        raise
