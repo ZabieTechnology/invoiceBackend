@@ -23,6 +23,9 @@ from api.invoice_settings import invoice_settings_bp
 from api.gst_rates import gst_rates_bp
 from api.inventory import inventory_bp
 from api.sales_invoices import sales_invoices_bp
+from api.quote_settings import quote_settings_bp
+from api.quote import quote_bp
+
 
 def create_app():
     app = Flask(__name__)
@@ -74,6 +77,9 @@ def create_app():
     app.register_blueprint(gst_rates_bp)
     app.register_blueprint(inventory_bp)
     app.register_blueprint(sales_invoices_bp)
+    app.register_blueprint(quote_settings_bp)
+    app.register_blueprint(quote_bp)
+
 
 
     @app.route('/api/test/set-session/<name>')
