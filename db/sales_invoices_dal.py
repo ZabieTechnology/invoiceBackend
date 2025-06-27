@@ -8,8 +8,11 @@ import traceback
 from .activity_log_dal import add_activity
 # We need to interact with inventory and its transactions
 from .inventory_dal import add_stock_transaction
+# ** FIX **: Import the settings DAL to get the next invoice number
+from .invoice_settings_dal import get_invoice_settings
 
 SALES_INVOICE_COLLECTION = 'sales_invoices'
+INVOICE_SETTINGS_COLLECTION = 'invoice_settings'
 logging.basicConfig(level=logging.INFO)
 
 def _serialize_invoice(invoice):
@@ -44,6 +47,17 @@ def create_sales_invoice(db_conn, invoice_data, user="System", tenant_id="defaul
     """
     try:
         now = datetime.utcnow()
+        settings_collection = db_conn[INVOICE_SETTINGS_COLLECTION]
+
+        # ** FIX **: Get invoice settings to generate the invoice number
+        settings = get_invoice_settings(db_conn, tenant_id)
+        # Use .get() for safe access to potentially missing keys
+        next_number = settings.get('global', {}).get('nextInvoiceNumber', 1)
+        # Find the default theme profile to get the prefix
+        default_theme = next((theme for theme in settings.get('savedThemes', []) if theme.get('isDefault')), None)
+        prefix = default_theme.get('invoicePrefix', 'INV-') if default_theme else 'INV-'
+
+        invoice_data['invoiceNumber'] = f"{prefix}{next_number}"
         invoice_data['created_date'] = now
         invoice_data['updated_date'] = now
         invoice_data['created_by'] = user
@@ -53,12 +67,19 @@ def create_sales_invoice(db_conn, invoice_data, user="System", tenant_id="defaul
 
         result = db_conn[SALES_INVOICE_COLLECTION].insert_one(invoice_data)
         inserted_id = result.inserted_id
-        logging.info(f"Sales Invoice '{inserted_id}' created by {user} for tenant {tenant_id}")
+        logging.info(f"Sales Invoice '{inserted_id}' created with number '{invoice_data['invoiceNumber']}' by {user} for tenant {tenant_id}")
+
+        # Atomically increment the next invoice number in settings
+        settings_collection.update_one(
+            {"tenant_id": tenant_id},
+            {"$inc": {"global.nextInvoiceNumber": 1}}
+        )
+        logging.info(f"Incremented nextInvoiceNumber for tenant '{tenant_id}'.")
 
         add_activity(
             action_type="CREATE_SALES_INVOICE",
             user=user,
-            details=f"Created Sales Invoice, Customer: {invoice_data.get('customerName', 'N/A')}",
+            details=f"Created Sales Invoice: {invoice_data['invoiceNumber']}, Customer: {invoice_data.get('customerName', 'N/A')}",
             document_id=inserted_id,
             collection_name=SALES_INVOICE_COLLECTION,
             tenant_id=tenant_id
@@ -110,16 +131,12 @@ def get_all_sales_invoices(db_conn, page=1, limit=25, filters=None, tenant_id="d
 
         invoice_list = list(invoices_cursor)
 
-        # ** FIX **
-        # Added detailed logging to pinpoint the exact document causing the serialization error.
         serialized_list = []
         for invoice in invoice_list:
             try:
                 serialized_list.append(_serialize_invoice(invoice))
             except Exception as serialization_error:
                 logging.error(f"Failed to serialize invoice with ID: {invoice.get('_id')}. Error: {serialization_error}")
-                # Optionally, you can skip the problematic invoice and continue
-                # Or re-raise the error after logging to stop the process
                 raise
 
         total_items = db_conn[SALES_INVOICE_COLLECTION].count_documents(query)

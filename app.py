@@ -25,6 +25,7 @@ from api.inventory import inventory_bp
 from api.sales_invoices import sales_invoices_bp
 from api.quote_settings import quote_settings_bp
 from api.quote import quote_bp
+from api.credit_note import credit_note_bp
 
 
 def create_app():
@@ -79,6 +80,7 @@ def create_app():
     app.register_blueprint(sales_invoices_bp)
     app.register_blueprint(quote_settings_bp)
     app.register_blueprint(quote_bp)
+    app.register_blueprint(credit_note_bp)
 
 
 

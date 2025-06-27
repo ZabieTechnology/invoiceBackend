@@ -12,12 +12,10 @@ logging.basicConfig(level=logging.INFO)
 
 def _format_item_dates_for_response(item):
     """Converts datetime objects to string format for API responses."""
-    if item.get('expiryDate') and isinstance(item['expiryDate'], datetime):
-        item['expiryDate'] = item['expiryDate'].strftime('%Y-%m-%d')
-    if item.get('mfgDate') and isinstance(item['mfgDate'], datetime):
-        item['mfgDate'] = item['mfgDate'].strftime('%Y-%m-%d')
-    if item.get('asOfDate') and isinstance(item['asOfDate'], datetime):
-        item['asOfDate'] = item['asOfDate'].strftime('%Y-%m-%d')
+    if item:
+        for date_field in ['expiryDate', 'mfgDate', 'asOfDate', 'created_date', 'updated_date']:
+            if item.get(date_field) and isinstance(item[date_field], datetime):
+                item[date_field] = item[date_field].isoformat()
     return item
 
 def _parse_item_dates_from_request(item_data):
@@ -25,14 +23,17 @@ def _parse_item_dates_from_request(item_data):
     for date_field in ['expiryDate', 'mfgDate', 'asOfDate']:
         if date_field in item_data and item_data.get(date_field):
             try:
-                item_data[date_field] = datetime.strptime(item_data[date_field], '%Y-%m-%d')
+                # Handles both 'YYYY-MM-DD' and full ISO strings
+                item_data[date_field] = datetime.fromisoformat(item_data[date_field].replace('Z', '+00:00'))
             except (ValueError, TypeError):
+                logging.warning(f"Could not parse date for field {date_field}: {item_data[date_field]}")
                 item_data[date_field] = None
     return item_data
 
 def create_item(db_conn, item_data, user="System", tenant_id="default_tenant_placeholder"):
     """
     Creates a new inventory item.
+    If it's a product with an initial opening stock, it also creates the first stock transaction.
     """
     try:
         now = datetime.utcnow()
@@ -53,14 +54,16 @@ def create_item(db_conn, item_data, user="System", tenant_id="default_tenant_pla
         item_data['updated_by'] = user
         item_data['tenant_id'] = tenant_id
 
-        initial_stock = 0
+        # FIX: Initialize currentStock to 0. The transaction will set the correct value.
+        item_data['currentStock'] = 0
+
+        opening_stock_qty = 0
         if item_data.get('itemType') == 'product' and item_data.get('openingStockQty'):
             try:
-                initial_stock = float(item_data['openingStockQty'])
+                opening_stock_qty = float(item_data['openingStockQty'])
             except (ValueError, TypeError):
-                initial_stock = 0
+                opening_stock_qty = 0
 
-        item_data['currentStock'] = initial_stock
         item_data.pop('_id', None)
 
         result = db_conn[INVENTORY_COLLECTION].insert_one(item_data)
@@ -69,10 +72,17 @@ def create_item(db_conn, item_data, user="System", tenant_id="default_tenant_pla
 
         add_activity("CREATE_ITEM", user, f"Created Item: {item_name_to_check}", inserted_id, INVENTORY_COLLECTION, tenant_id)
 
-        if initial_stock > 0:
+        # If there was an opening stock, create the initial transaction which will update the stock level
+        if opening_stock_qty > 0:
             add_stock_transaction(
-                db_conn=db_conn, item_id=str(inserted_id), transaction_type='IN', quantity=initial_stock,
-                price_per_item=item_data.get('pricePerItem'), notes='Initial opening stock', user=user, tenant_id=tenant_id
+                db_conn=db_conn,
+                item_id=str(inserted_id),
+                transaction_type='IN',
+                quantity=opening_stock_qty,
+                price_per_item=item_data.get('pricePerItem'),
+                notes='Initial opening stock',
+                user=user,
+                tenant_id=tenant_id
             )
         return inserted_id
     except ValueError as ve:
@@ -84,9 +94,7 @@ def create_item(db_conn, item_data, user="System", tenant_id="default_tenant_pla
 def get_item_by_id(db_conn, item_id, tenant_id="default_tenant_placeholder"):
     try:
         item = db_conn[INVENTORY_COLLECTION].find_one({"_id": ObjectId(item_id), "tenant_id": tenant_id})
-        if item:
-            item = _format_item_dates_for_response(item)
-        return item
+        return _format_item_dates_for_response(item)
     except Exception as e:
         logging.error(f"Error fetching item by ID {item_id}: {e}")
         raise
@@ -205,7 +213,7 @@ def get_transactions_for_item(db_conn, item_id, tenant_id="default_tenant_placeh
             "itemId": item_id,
             "tenant_id": tenant_id
         }).sort("transaction_date", -1)
-        return list(transactions_cursor)
+        return [_format_item_dates_for_response(tx) for tx in transactions_cursor]
     except Exception as e:
         logging.error(f"Error fetching transactions for item {item_id}: {e}")
         raise
