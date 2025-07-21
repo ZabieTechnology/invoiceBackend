@@ -9,10 +9,21 @@ from .activity_log_dal import add_activity
 CUSTOMER_COLLECTION = 'customers'
 logging.basicConfig(level=logging.INFO)
 
+def _serialize_customer(customer):
+    """Helper function to convert ObjectId to string for JSON serialization."""
+    if not customer:
+        return None
+    if '_id' in customer and isinstance(customer.get('_id'), ObjectId):
+        customer['_id'] = str(customer['_id'])
+    if 'asOfDate' in customer and isinstance(customer.get('asOfDate'), datetime):
+        customer['asOfDate'] = customer['asOfDate'].isoformat()
+    # Ensure nested ObjectIds are also handled if necessary in other fields
+    return customer
+
 
 def create_customer_minimal(db_conn, display_name, payment_terms, user="System", tenant_id="default_tenant_placeholder", email="", mobile=""):
     """
-    Creates a new customer with minimal information (displayName and paymentTerms).
+    Creates a new customer with minimal information and returns the full created document.
     Other fields are set to defaults or None.
     Checks for displayName uniqueness (case-insensitive) within the tenant.
     """
@@ -22,7 +33,7 @@ def create_customer_minimal(db_conn, display_name, payment_terms, user="System",
         # Check for existing customer with the same displayName (case-insensitive)
         existing_customer = db_conn[CUSTOMER_COLLECTION].find_one({
             "displayName": {"$regex": f"^{re.escape(display_name)}$", "$options": "i"},
-            "tenant_id": tenant_id # Query uses the passed tenant_id
+            "tenant_id": tenant_id
         })
         if existing_customer:
             raise ValueError(f"A customer with the display name '{display_name}' already exists.")
@@ -30,7 +41,7 @@ def create_customer_minimal(db_conn, display_name, payment_terms, user="System",
         customer_data = {
             "displayName": display_name,
             "paymentTerms": payment_terms,
-            "customerType": "Business",
+            "customerType": "Individual", # UPDATED: Set customer type to Individual for quick add
             "companyName": display_name,
             "salutation": None,
             "firstName": None,
@@ -64,7 +75,7 @@ def create_customer_minimal(db_conn, display_name, payment_terms, user="System",
             "created_date": now,
             "updated_date": now,
             "updated_user": user,
-            "tenant_id": tenant_id # Use the passed tenant_id for saving
+            "tenant_id": tenant_id
         }
 
         result = db_conn[CUSTOMER_COLLECTION].insert_one(customer_data)
@@ -79,7 +90,10 @@ def create_customer_minimal(db_conn, display_name, payment_terms, user="System",
             collection_name=CUSTOMER_COLLECTION,
             tenant_id=tenant_id
         )
-        return inserted_id
+
+        # Fetch the newly created document to return it
+        created_customer = db_conn[CUSTOMER_COLLECTION].find_one({"_id": inserted_id})
+        return _serialize_customer(created_customer)
     except ValueError as ve:
         raise
     except Exception as e:
@@ -132,7 +146,8 @@ def create_customer(db_conn, customer_data, user="System", tenant_id="default_te
             collection_name=CUSTOMER_COLLECTION,
             tenant_id=tenant_id
         )
-        return inserted_id
+        created_customer = db_conn[CUSTOMER_COLLECTION].find_one({"_id": inserted_id})
+        return _serialize_customer(created_customer)
     except ValueError as ve:
         raise
     except Exception as e:
@@ -141,7 +156,8 @@ def create_customer(db_conn, customer_data, user="System", tenant_id="default_te
 
 def get_customer_by_id(db_conn, customer_id, tenant_id="default_tenant_placeholder"):
     try:
-        return db_conn[CUSTOMER_COLLECTION].find_one({"_id": ObjectId(customer_id), "tenant_id": tenant_id})
+        customer = db_conn[CUSTOMER_COLLECTION].find_one({"_id": ObjectId(customer_id), "tenant_id": tenant_id})
+        return _serialize_customer(customer)
     except Exception as e:
         logging.error(f"Error fetching customer by ID {customer_id} for tenant {tenant_id}: {e}")
         raise
@@ -156,11 +172,13 @@ def get_all_customers(db_conn, page=1, limit=25, filters=None, tenant_id="defaul
         if limit is not None and limit > 0:
             customers_cursor = db_conn[CUSTOMER_COLLECTION].find(query).sort("displayName", 1).skip(skip).limit(limit)
         else:
-            customers_cursor = db_conn[CUSTOMER_COLLECTION].find(query).sort("displayName", 1).skip(skip)
+            # If limit is -1 or None, fetch all documents
+            customers_cursor = db_conn[CUSTOMER_COLLECTION].find(query).sort("displayName", 1)
 
         customer_list = list(customers_cursor)
+        serialized_list = [_serialize_customer(cust) for cust in customer_list]
         total_items = db_conn[CUSTOMER_COLLECTION].count_documents(query)
-        return customer_list, total_items
+        return serialized_list, total_items
     except Exception as e:
         logging.error(f"Error fetching all customers for tenant {tenant_id}: {e}")
         raise

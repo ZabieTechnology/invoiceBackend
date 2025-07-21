@@ -26,6 +26,10 @@ from api.sales_invoices import sales_invoices_bp
 from api.quote_settings import quote_settings_bp
 from api.quote import quote_bp
 from api.credit_note import credit_note_bp
+from api.payment import payment_bp
+from api.business_rules import business_rules_bp
+from api.tds_rates import tds_rates_bp
+from api.tcs_rates import tcs_rates_bp
 
 
 def create_app():
@@ -81,6 +85,10 @@ def create_app():
     app.register_blueprint(quote_settings_bp)
     app.register_blueprint(quote_bp)
     app.register_blueprint(credit_note_bp)
+    app.register_blueprint(payment_bp)
+    app.register_blueprint(business_rules_bp)
+    app.register_blueprint(tds_rates_bp)
+    app.register_blueprint(tcs_rates_bp)
 
 
 

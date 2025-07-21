@@ -11,18 +11,19 @@ default_single_theme_profile_data = {
     "selectedColor": "#4CAF50",
     "itemTableColumns": {
         "pricePerItem": True, "quantity": True, "batchNo": False, "expDate": False, "mfgDate": False,
-        "discountPerItem": False, "taxRate": True, "taxPerItem": True, "hsnSacCode": True, "serialNo": False,
+        "discountPerItem": False, "hsnSacCode": True, "serialNo": False,
     },
+    "taxDisplayMode": "breakdown",  # 'no_tax' or 'breakdown'
     "customItemColumns": [],
     "invoiceHeading": "TAX INVOICE",
     "invoicePrefix": "INV-",
     "invoiceSuffix": "",
-    "invoiceDueAfterDays": 30,
-    "showPoNumber": True,  # Added: Default for PO Number visibility per theme
-    "customHeaderFields": [], # Added: Default for custom header fields per theme
+    "showPoNumber": True,
+    "customHeaderFields": [],
     "upiId": "",
     "upiQrCodeImageUrl": "",
     "bankAccountId": '',
+    "defaultSalesAccountId": '',
     "showSaleAgentOnInvoice": False,
     "showBillToSection": True,
     "showShipToSection": True,
@@ -39,7 +40,6 @@ default_global_settings = {
     "companyLogoUrl": "/images/default_logo.png",
     "nextInvoiceNumber": 1,
     "currency": "INR",
-    # "decrementInvoiceNumberOnDelete": False, // REMOVED from global as well if it was here
 }
 
 def get_invoice_settings(db_conn, user_id=None):
@@ -54,7 +54,6 @@ def get_invoice_settings(db_conn, user_id=None):
             settings_doc['global'] = default_global_settings
         else:
             settings_doc['global'] = {**default_global_settings, **settings_doc['global']}
-            # Remove deprecated global setting if it exists from old saves
             settings_doc['global'].pop('decrementInvoiceNumberOnDelete', None)
 
 
@@ -83,6 +82,13 @@ def get_invoice_settings(db_conn, user_id=None):
                         except json.JSONDecodeError:
                             print(f"Warning: Could not parse JSON for nested field {field_key} in theme {theme_id}. Using default.")
                             theme_profile[field_key] = default_single_theme_profile_data.get(field_key, [] if 'Columns' in field_key or 'Fields' in field_key else {})
+
+                # Remove deprecated fields if they exist from old saves
+                theme_profile.pop('invoiceDueAfterDays', None)
+                theme_profile.pop('showGstBreakdown', None)
+                if 'itemTableColumns' in theme_profile:
+                    theme_profile['itemTableColumns'].pop('taxRate', None)
+                    theme_profile['itemTableColumns'].pop('taxPerItem', None)
 
                 full_theme_profile = {
                     **default_single_theme_profile_data,
@@ -119,7 +125,6 @@ def save_invoice_settings(db_conn, global_settings_data, saved_themes_list, user
     """
     collection = db_conn[INVOICE_SETTINGS_COLLECTION]
 
-    # Clean global settings data from deprecated fields
     if global_settings_data and 'decrementInvoiceNumberOnDelete' in global_settings_data:
         del global_settings_data['decrementInvoiceNumberOnDelete']
 
@@ -149,8 +154,13 @@ def save_invoice_settings(db_conn, global_settings_data, saved_themes_list, user
             elif field_key not in theme_profile:
                  theme_profile[field_key] = default_single_theme_profile_data.get(field_key, [] if 'Columns' in field_key or 'Fields' in field_key else {})
 
-        # Remove deprecated setting if it somehow exists in a theme profile
+        # Remove deprecated settings if they somehow exist in a theme profile
         theme_profile.pop('decrementInvoiceNumberOnDelete', None)
+        theme_profile.pop('invoiceDueAfterDays', None)
+        theme_profile.pop('showGstBreakdown', None)
+        if 'itemTableColumns' in theme_profile:
+            theme_profile['itemTableColumns'].pop('taxRate', None)
+            theme_profile['itemTableColumns'].pop('taxPerItem', None)
 
 
         theme_id = theme_profile.get('id', f"theme_profile_{str(ObjectId())}")
