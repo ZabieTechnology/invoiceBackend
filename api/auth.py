@@ -35,7 +35,7 @@ def register():
             return jsonify({"message": "User created successfully", "userId": str(user_id)}), 201
         else:
             return jsonify({"message": "User registration failed"}), 500
-            
+
     except Exception as e:
         logging.error(f"Error during registration for {username}: {e}")
         return jsonify({"message": "An error occurred during registration"}), 500
@@ -56,13 +56,13 @@ def login():
                 return jsonify({"message": "User account is inactive"}), 403
 
             access_token = create_access_token(identity=str(user['_id']))
-            
+
             logging.info(f"User '{username}' logged in successfully.")
             return jsonify(access_token=access_token, username=user['username']), 200
         else:
             logging.warning(f"Invalid login attempt for username: {username}")
             return jsonify({"message": "Invalid username or password"}), 401
-            
+
     except Exception as e:
         logging.error(f"Error during login for {username}: {e}")
         return jsonify({"message": "An error occurred during login"}), 500
