@@ -33,28 +33,27 @@ from api.tcs_rates import tcs_rates_bp
 
 
 def create_app():
+    """
+    Application factory to create and configure the Flask app.
+    """
     app = Flask(__name__)
     app.config.from_object(config)
     # ensure_upload_folders_exist()
 
-    # --- Updated CORS Configuration ---
-    # Define allowed origins. It's good practice to get the production origin
-    # from an environment variable.
-    allowed_origins = [
-        "http://localhost:3000", # For local development
-        "https://polite-glacier-09051600f.4.azurestaticapps.net" # Your deployed frontend
-    ]
-    # You can also use an environment variable for production origins:
-    # production_origin = os.environ.get('FRONTEND_URL')
-    # if production_origin:
-    #     allowed_origins.append(production_origin)
+    # --- Azure-Ready CORS Configuration ---
+    # Read the allowed frontend URLs from an environment variable.
+    # In Azure, this will be set in the App Service Configuration.
+    # You can provide multiple URLs separated by a comma.
+    frontend_urls = os.environ.get('FRONTEND_URLS', 'http://localhost:3000').split(',')
+
+    app.logger.info(f"Allowed CORS origins: {frontend_urls}")
 
     CORS(
         app,
-        origins=allowed_origins, # Use the list of allowed origins
+        origins=frontend_urls, # Use the dynamic list of origins
         supports_credentials=True # Crucial for sending cookies/auth headers
     )
-    # --- End Updated CORS Configuration ---
+    # --- End CORS Configuration ---
 
     init_db(app)
     jwt = JWTManager(app)
@@ -64,8 +63,6 @@ def create_app():
         app.config['SESSION_MONGODB_DB'] = config.SESSION_MONGODB_DB or mongo.db.name
         app.config['SESSION_MONGODB_COLLECT'] = config.SESSION_MONGODB_COLLECT
     Session(app)
-
-
 
     # Register Blueprints
     app.register_blueprint(dropdown_bp)
@@ -90,22 +87,33 @@ def create_app():
     app.register_blueprint(tds_rates_bp)
     app.register_blueprint(tcs_rates_bp)
 
+    # --- Error Handlers for JSON API ---
+    @app.errorhandler(404)
+    def not_found_error(error):
+        return jsonify({"error": "Not Found", "message": "The requested URL was not found on the server."}), 404
 
+    @app.errorhandler(500)
+    def internal_error(error):
+        # In production, you might want to log the error in more detail
+        app.logger.error(f"Internal Server Error: {error}")
+        return jsonify({"error": "Internal Server Error", "message": "An unexpected error occurred."}), 500
 
-    @app.route('/api/test/set-session/<name>')
-    def set_session_route(name):
-        session['username'] = name
-        return jsonify({"message": f"Flask session username '{name}' set."})
+    # --- Test Routes (Consider enabling only in debug mode) ---
+    if app.config.get("DEBUG"):
+        @app.route('/api/test/set-session/<name>')
+        def set_session_route(name):
+            session['username'] = name
+            return jsonify({"message": f"Flask session username '{name}' set."})
 
-    @app.route('/api/test/get-session')
-    def get_session_route():
-        username = session.get('username', 'Not set')
-        return jsonify({"flask_session_username": username})
+        @app.route('/api/test/get-session')
+        def get_session_route():
+            username = session.get('username', 'Not set')
+            return jsonify({"flask_session_username": username})
 
-    @app.route('/api/test/clear-session')
-    def clear_session_route():
-        session.clear()
-        return jsonify({"message": "Flask session cleared."})
+        @app.route('/api/test/clear-session')
+        def clear_session_route():
+            session.clear()
+            return jsonify({"message": "Flask session cleared."})
 
     @app.route("/")
     def index():
@@ -113,9 +121,12 @@ def create_app():
 
     return app
 
+# The app instance is created by the factory
 app = create_app()
 
 if __name__ == "__main__":
+    # These settings are primarily for local development.
+    # Azure App Service will use its own server (like Gunicorn).
     host = os.environ.get('FLASK_RUN_HOST', '127.0.0.1')
     port = int(os.environ.get('FLASK_RUN_PORT', 5000))
-    app.run(host=host, port=port, debug=app.config['DEBUG'])
+    app.run(host=host, port=port, debug=app.config.get('DEBUG', False))
