@@ -38,7 +38,8 @@ def create_app():
     """
     app = Flask(__name__)
     app.config.from_object(config)
-    # ensure_upload_folders_exist()
+    # This function is called to ensure directories for file uploads exist.
+    ensure_upload_folders_exist(app)
 
     # --- Azure-Ready CORS Configuration ---
     # Read the allowed frontend URLs from an environment variable.
