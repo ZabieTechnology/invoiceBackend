@@ -26,3 +26,5 @@ Werkzeug>=2.0 # For password hashing (usually a Flask dependency)
 azure-ai-formrecognizer
 azure-identity
 reportlab
+google-cloud-aiplatform
+google-cloud-documentai
