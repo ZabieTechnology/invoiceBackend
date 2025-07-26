@@ -30,6 +30,7 @@ from api.payment import payment_bp
 from api.business_rules import business_rules_bp
 from api.tds_rates import tds_rates_bp
 from api.tcs_rates import tcs_rates_bp
+from api.account_classification import classification_bp
 
 
 def create_app():
@@ -86,6 +87,7 @@ def create_app():
     app.register_blueprint(business_rules_bp)
     app.register_blueprint(tds_rates_bp)
     app.register_blueprint(tcs_rates_bp)
+    app.register_blueprint(classification_bp)
 
     # --- Error Handlers for JSON API ---
     @app.errorhandler(404)

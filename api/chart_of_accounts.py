@@ -3,9 +3,8 @@ from flask import Blueprint, request, jsonify, session
 import logging
 from bson import ObjectId
 import re
-from datetime import datetime # Ensure datetime is imported
+from datetime import datetime
 
-# Assuming your DAL functions are correctly defined in this path
 from db.chart_of_accounts_dal import (
     create_account,
     get_account_by_id,
@@ -13,7 +12,6 @@ from db.chart_of_accounts_dal import (
     update_account,
     delete_account_by_id
 )
-# Assuming get_db is correctly defined in this path
 from db.database import get_db
 
 
@@ -25,14 +23,24 @@ chart_of_accounts_bp = Blueprint(
 
 logging.basicConfig(level=logging.INFO)
 
-# Placeholder: Implement these based on your authentication/session management
 def get_current_user():
-    # Replace with your actual user retrieval logic
     return session.get('username', 'System_User_Placeholder')
 
 def get_current_tenant_id():
-    # Replace with your actual tenant ID retrieval logic
     return session.get('tenant_id', 'default_tenant_placeholder')
+
+def serialize_doc(doc):
+    """ Helper to serialize MongoDB doc, converting ObjectId and datetime. """
+    if not doc:
+        return None
+    doc['_id'] = str(doc['_id'])
+    if doc.get('balanceAsOf') and isinstance(doc['balanceAsOf'], datetime):
+        doc['balanceAsOf'] = doc['balanceAsOf'].strftime('%Y-%m-%d')
+    if doc.get('defaultGstRateId') and isinstance(doc['defaultGstRateId'], ObjectId):
+        doc['defaultGstRateId'] = str(doc['defaultGstRateId'])
+    if doc.get('subAccountOf') and isinstance(doc['subAccountOf'], ObjectId):
+        doc['subAccountOf'] = str(doc['subAccountOf'])
+    return doc
 
 
 @chart_of_accounts_bp.route('', methods=['POST'])
@@ -41,8 +49,8 @@ def handle_create_account():
     if not data:
         return jsonify({"message": "No input data provided"}), 400
 
-    if not data.get('accountType') or not data.get('code') or not data.get('name'):
-        return jsonify({"message": "Missing required fields: Account Type, Code, and Name"}), 400
+    if not data.get('nature') or not data.get('mainHead') or not data.get('code') or not data.get('name'):
+        return jsonify({"message": "Missing required fields: Nature, Main Head, Code, and Name"}), 400
 
     if 'defaultGstRateId' in data and data['defaultGstRateId'] == "":
         data['defaultGstRateId'] = None
@@ -50,28 +58,14 @@ def handle_create_account():
         data['subAccountOf'] = None
 
     if data.get('isSubAccount') and not data.get('subAccountOf'):
-        return jsonify({"message": "Sub-account Of is required if 'Is Sub-Account' is checked."}), 400
+        return jsonify({"message": "Parent account is required for a sub-account."}), 400
 
     try:
-        current_user = get_current_user()
-        current_tenant = get_current_tenant_id()
-        db = get_db() # Get DB instance
+        db = get_db()
+        account_id = create_account(db, data, user=get_current_user(), tenant_id=get_current_tenant_id())
+        created_account = get_account_by_id(db, str(account_id), tenant_id=get_current_tenant_id())
 
-        account_id = create_account(db, data, user=current_user, tenant_id=current_tenant) # Pass db
-
-        created_account = get_account_by_id(db, str(account_id), tenant_id=current_tenant) # Pass db
-        if created_account:
-            created_account['_id'] = str(created_account['_id'])
-            if created_account.get('balanceAsOf') and isinstance(created_account['balanceAsOf'], datetime):
-                created_account['balanceAsOf'] = created_account['balanceAsOf'].strftime('%Y-%m-%d')
-            if created_account.get('defaultGstRateId') and isinstance(created_account['defaultGstRateId'], ObjectId):
-                created_account['defaultGstRateId'] = str(created_account['defaultGstRateId'])
-            if created_account.get('subAccountOf') and isinstance(created_account['subAccountOf'], ObjectId):
-                created_account['subAccountOf'] = str(created_account['subAccountOf'])
-
-            return jsonify({"message": "Account created successfully", "data": created_account}), 201
-        else:
-            return jsonify({"message": "Account created, but failed to retrieve."}), 201
+        return jsonify({"message": "Account created successfully", "data": serialize_doc(created_account)}), 201
     except Exception as e:
         logging.error(f"Error in handle_create_account: {e}")
         return jsonify({"message": f"Failed to create account: {str(e)}"}), 500
@@ -81,18 +75,11 @@ def handle_get_account(account_id):
     try:
         if not ObjectId.is_valid(account_id):
             return jsonify({"message": "Invalid account ID format"}), 400
-        current_tenant = get_current_tenant_id()
-        db = get_db() # Get DB instance
-        account = get_account_by_id(db, account_id, tenant_id=current_tenant) # Pass db
+
+        db = get_db()
+        account = get_account_by_id(db, account_id, tenant_id=get_current_tenant_id())
         if account:
-            account['_id'] = str(account['_id'])
-            if account.get('balanceAsOf') and isinstance(account['balanceAsOf'], datetime):
-                account['balanceAsOf'] = account['balanceAsOf'].strftime('%Y-%m-%d')
-            if account.get('defaultGstRateId') and isinstance(account['defaultGstRateId'], ObjectId):
-                account['defaultGstRateId'] = str(account['defaultGstRateId'])
-            if account.get('subAccountOf') and isinstance(account['subAccountOf'], ObjectId):
-                account['subAccountOf'] = str(account['subAccountOf'])
-            return jsonify(account), 200
+            return jsonify(serialize_doc(account)), 200
         else:
             return jsonify({"message": "Account not found"}), 404
     except Exception as e:
@@ -102,54 +89,39 @@ def handle_get_account(account_id):
 @chart_of_accounts_bp.route('', methods=['GET'])
 def handle_get_all_chart_of_accounts():
     try:
+        # --- CHANGES START HERE ---
+        # Add logging to see what arguments the backend is receiving
+        logging.info(f"Received request args: {request.args}")
+        # --- CHANGES END HERE ---
+
         page = int(request.args.get("page", 1))
         limit_str = request.args.get("limit", "10")
         limit = int(limit_str) if limit_str.isdigit() and int(limit_str) != 0 else -1
-        current_tenant = get_current_tenant_id()
-        db = get_db() # Get DB instance
-
         search_term = request.args.get("search", None)
-        # Corrected: Use 'accountType' to match frontend query parameter
-        account_type_filter = request.args.get("accountType", None)
-        # 'category' was used before, if you still need it for other purposes, add it separately
-        # For now, focusing on 'accountType' for bank accounts.
-        # category_filter = request.args.get("category", None)
-
+        gst_enabled_filter = request.args.get("enabledOptions.GST", None)
 
         filters = {}
+
         if search_term:
             regex_query = {"$regex": re.escape(search_term), "$options": "i"}
             filters["$or"] = [
                 {"name": regex_query}, {"code": regex_query},
-                {"description": regex_query}, {"accountType": regex_query}
+                {"description": regex_query}, {"nature": regex_query},
+                {"mainHead": regex_query}, {"category": regex_query}
             ]
 
-        # Apply accountType filter if provided
-        if account_type_filter:
-            filters["accountType"] = account_type_filter
-            # If you were using 'category' for other specific filters like "Inactive", "All Accounts",
-            # you would need to handle that logic separately or adjust how filters are combined.
-            # For example, if 'category' is still sent for those:
-            # category_specific_filter = request.args.get("category", None)
-            # if category_specific_filter and category_specific_filter.lower() == "inactive":
-            #     filters["status"] = "Inactive"
-            # elif category_specific_filter and category_specific_filter.lower() == "all accounts":
-            #     filters["status"] = {"$ne": "Inactive"}
+        if gst_enabled_filter is not None:
+            filters["enabledOptions.GST"] = gst_enabled_filter.lower() == 'true'
 
+        # --- CHANGES START HERE ---
+        # Add logging to see the final constructed filter before querying the DB
+        logging.info(f"Constructed MongoDB filter: {filters}")
+        # --- CHANGES END HERE ---
 
-        # Assuming get_all_accounts DAL function is updated to accept db connection first
-        account_list, total_items = get_all_accounts(db, page, limit, filters, tenant_id=current_tenant) # Pass db
+        db = get_db()
+        account_list, total_items = get_all_accounts(db, page, limit, filters, tenant_id=get_current_tenant_id())
 
-        result = []
-        for item in account_list:
-            item['_id'] = str(item['_id'])
-            if item.get('balanceAsOf') and isinstance(item['balanceAsOf'], datetime):
-                item['balanceAsOf'] = item['balanceAsOf'].strftime('%Y-%m-%d')
-            if item.get('defaultGstRateId') and isinstance(item['defaultGstRateId'], ObjectId):
-                item['defaultGstRateId'] = str(item['defaultGstRateId'])
-            if item.get('subAccountOf') and isinstance(item['subAccountOf'], ObjectId):
-                item['subAccountOf'] = str(item['subAccountOf'])
-            result.append(item)
+        result = [serialize_doc(item) for item in account_list]
 
         return jsonify({
             "data": result, "total": total_items, "page": page,
@@ -168,8 +140,8 @@ def handle_update_account(account_id):
     if not data: return jsonify({"message": "No input data provided"}), 400
     if not ObjectId.is_valid(account_id): return jsonify({"message": "Invalid account ID format"}), 400
 
-    if not data.get('accountType') or not data.get('code') or not data.get('name'):
-        return jsonify({"message": "Missing required fields: Account Type, Code, and Name"}), 400
+    if not data.get('nature') or not data.get('mainHead') or not data.get('code') or not data.get('name'):
+        return jsonify({"message": "Missing required fields: Nature, Main Head, Code, and Name"}), 400
 
     if 'defaultGstRateId' in data and data['defaultGstRateId'] == "":
         data['defaultGstRateId'] = None
@@ -177,28 +149,15 @@ def handle_update_account(account_id):
         data['subAccountOf'] = None
 
     if data.get('isSubAccount') and not data.get('subAccountOf'):
-        return jsonify({"message": "Sub-account Of is required if 'Is Sub-Account' is checked."}), 400
+        return jsonify({"message": "Parent account is required for a sub-account."}), 400
 
     try:
-        current_user = get_current_user()
-        current_tenant = get_current_tenant_id()
-        db = get_db() # Get DB instance
-
-        matched_count = update_account(db, account_id, data, user=current_user, tenant_id=current_tenant) # Pass db
+        db = get_db()
+        matched_count = update_account(db, account_id, data, user=get_current_user(), tenant_id=get_current_tenant_id())
         if matched_count == 0: return jsonify({"message": "Account not found or no changes made"}), 404
 
-        updated_account = get_account_by_id(db, account_id, tenant_id=current_tenant) # Pass db
-        if updated_account:
-            updated_account['_id'] = str(updated_account['_id'])
-            if updated_account.get('balanceAsOf') and isinstance(updated_account['balanceAsOf'], datetime):
-                updated_account['balanceAsOf'] = updated_account['balanceAsOf'].strftime('%Y-%m-%d')
-            if updated_account.get('defaultGstRateId') and isinstance(updated_account['defaultGstRateId'], ObjectId):
-                updated_account['defaultGstRateId'] = str(updated_account['defaultGstRateId'])
-            if updated_account.get('subAccountOf') and isinstance(updated_account['subAccountOf'], ObjectId):
-                updated_account['subAccountOf'] = str(updated_account['subAccountOf'])
-            return jsonify({"message": "Account updated successfully", "data": updated_account}), 200
-        else:
-            return jsonify({"message": "Account updated, but failed to retrieve."}), 200
+        updated_account = get_account_by_id(db, account_id, tenant_id=get_current_tenant_id())
+        return jsonify({"message": "Account updated successfully", "data": serialize_doc(updated_account)}), 200
     except Exception as e:
         logging.error(f"Error updating account {account_id}: {e}")
         return jsonify({"message": f"Failed to update account: {str(e)}"}), 500
@@ -207,14 +166,12 @@ def handle_update_account(account_id):
 def handle_delete_account(account_id):
     try:
         if not ObjectId.is_valid(account_id): return jsonify({"message": "Invalid account ID format"}), 400
-        current_user = get_current_user()
-        current_tenant = get_current_tenant_id()
-        db = get_db() # Get DB instance
 
-        deleted_count = delete_account_by_id(db, account_id, user=current_user, tenant_id=current_tenant) # Pass db
+        db = get_db()
+        deleted_count = delete_account_by_id(db, account_id, user=get_current_user(), tenant_id=get_current_tenant_id())
         if deleted_count == 0: return jsonify({"message": "Account not found"}), 404
         return jsonify({"message": "Account deleted successfully"}), 200
-    except ValueError as ve: # Catch specific errors from DAL if raised
+    except ValueError as ve:
         return jsonify({"message": str(ve)}), 400
     except Exception as e:
         logging.error(f"Error deleting account {account_id}: {e}")
