@@ -7,6 +7,7 @@ from flask_jwt_extended import JWTManager
 
 from config import config, ensure_upload_folders_exist
 from db.database import init_db, mongo
+from utils.json_encoder import MongoJSONEncoder
 
 # Import Blueprints
 from api.dropdown import dropdown_bp
@@ -27,32 +28,42 @@ from api.quote_settings import quote_settings_bp
 from api.quote import quote_bp
 from api.credit_note import credit_note_bp
 from api.payment import payment_bp
-from api.business_rules import business_rules_bp
+from api.document_rules_api import document_rules_bp
 from api.tds_rates import tds_rates_bp
 from api.tcs_rates import tcs_rates_bp
 from api.account_classification import classification_bp
+from api.regional_settings_api import regional_settings_bp
+from api.industry_classification_api import industry_classification_bp
+from api.global_data import global_data_bp
 
 
 def create_app():
     """
     Application factory to create and configure the Flask app.
     """
+
+
     app = Flask(__name__)
+
+    app.json_encoder = MongoJSONEncoder
+
     app.config.from_object(config)
     # This function is called to ensure directories for file uploads exist.
     ensure_upload_folders_exist(app)
 
     # --- Azure-Ready CORS Configuration ---
     # Read the allowed frontend URLs from an environment variable.
+    # This is crucial for allowing your React app to communicate with the backend.
     frontend_urls = os.environ.get('FRONTEND_URLS', 'http://localhost:3000').split(',')
 
     app.logger.info(f"Allowed CORS origins: {frontend_urls}")
 
-    # Initialize CORS with support for credentials
+    # Initialize CORS with support for credentials. This allows cookies and
+    # authorization headers to be sent from the frontend.
     CORS(
         app,
         origins=frontend_urls,
-        supports_credentials=True # This line is critical for fixing the error
+        supports_credentials=True
     )
     # --- End CORS Configuration ---
 
@@ -65,7 +76,7 @@ def create_app():
         app.config['SESSION_MONGODB_COLLECT'] = config.SESSION_MONGODB_COLLECT
     Session(app)
 
-    # Register Blueprints
+    # Register all application Blueprints
     app.register_blueprint(dropdown_bp)
     app.register_blueprint(company_info_bp)
     app.register_blueprint(contact_details_bp)
@@ -84,10 +95,13 @@ def create_app():
     app.register_blueprint(quote_bp)
     app.register_blueprint(credit_note_bp)
     app.register_blueprint(payment_bp)
-    app.register_blueprint(business_rules_bp)
+    app.register_blueprint(document_rules_bp)
     app.register_blueprint(tds_rates_bp)
     app.register_blueprint(tcs_rates_bp)
     app.register_blueprint(classification_bp)
+    app.register_blueprint(regional_settings_bp)
+    app.register_blueprint(industry_classification_bp)
+    app.register_blueprint(global_data_bp)
 
     # --- Error Handlers for JSON API ---
     @app.errorhandler(404)
@@ -101,7 +115,7 @@ def create_app():
 
     @app.route("/")
     def index():
-        return jsonify({"status": "ok", "message": "Welcome to the Invoice Backend API!"})
+        return jsonify({"status": "ok", "message": "Welcome to the Co-book Backend API!"})
 
     return app
 
@@ -109,6 +123,7 @@ def create_app():
 app = create_app()
 
 if __name__ == "__main__":
+    # Use environment variables for host and port, with sensible defaults.
     host = os.environ.get('FLASK_RUN_HOST', '127.0.0.1')
-    port = int(os.environ.get('FLASK_RUN_PORT', 5000))
+    port = int(os.environ.get('FLASK_RUN_PORT', 5000)) # Changed default to 5001 to avoid conflicts
     app.run(host=host, port=port, debug=app.config.get('DEBUG', False))

@@ -2,17 +2,57 @@
 from bson.objectid import ObjectId
 from datetime import datetime
 import logging
+import random
+import uuid  # Import the UUID module
 from werkzeug.security import generate_password_hash, check_password_hash
 
 from .database import mongo
 
 USER_COLLECTION = 'users'
 
-def create_user(username, password, email=None, user_data=None):
+# --- THIS IS THE UPDATED TENANT ID FUNCTION ---
+def generate_tenant_id(company_name):
     """
-    Creates a new user document with a hashed password.
+    Generates a tenant ID using a UUIDv4, embedding the first four
+    letters of the company name into the ID for easy identification.
+
+    Format: xxxxxxxx-NAME-xxxx-xxxx-xxxxxxxxxxxx
+    """
+    if not company_name:
+        return None
+
+    # Take the first 4 letters, convert to uppercase, and pad if less than 4 chars
+    name_prefix = company_name[:4].upper().ljust(4, 'X')
+
+    # Generate a new UUID
+    generated_uuid = str(uuid.uuid4())
+
+    # Split the UUID into its parts
+    parts = generated_uuid.split('-')
+
+    # Replace the second part of the UUID with the company name prefix
+    parts[1] = name_prefix
+
+    # Join the parts back together to form the new tenant ID
+    tenant_id = '-'.join(parts)
+
+    return tenant_id
+
+def create_user(username, password, email=None, company_legal_name=None, user_data=None):
+    """
+    Creates a new user document with a hashed password and a tenant ID.
     """
     try:
+        user_data = user_data or {}
+        # Handle potential camelCase key from frontend JSON if not passed directly
+        if not company_legal_name:
+            company_legal_name = user_data.get('companyLegalName')
+
+        # Enforce that company_legal_name is provided.
+        if not company_legal_name:
+            logging.error("Attempt to create user without a company legal name.")
+            raise ValueError("Company legal name is required to create a user.")
+
         db = mongo.db
         if db[USER_COLLECTION].find_one({"username": username}):
             logging.warning(f"Attempt to create user with existing username: {username}")
@@ -20,19 +60,28 @@ def create_user(username, password, email=None, user_data=None):
 
         now = datetime.utcnow()
         hashed_password = generate_password_hash(password)
-        
+
+        tenant_id = generate_tenant_id(company_legal_name)
+
+        # Ensure a tenant_id was successfully generated.
+        if not tenant_id:
+            logging.error(f"Failed to generate tenant_id for company: {company_legal_name}")
+            raise ValueError("Could not generate a tenant ID from the provided company name.")
+
         new_user = {
             "username": username,
             "password_hash": hashed_password,
             "email": email,
+            "company_legal_name": company_legal_name,
+            "tenant_id": tenant_id,
             "created_date": now,
             "updated_date": now,
-            "is_active": True, 
-            **(user_data if user_data else {})
+            "is_active": True,
+            **user_data
         }
-        
+
         result = db[USER_COLLECTION].insert_one(new_user)
-        logging.info(f"User '{username}' created with ID: {result.inserted_id}")
+        logging.info(f"User '{username}' created with ID: {result.inserted_id} and Tenant ID: {tenant_id}")
         return result.inserted_id
     except Exception as e:
         logging.error(f"Error creating user '{username}': {e}")
